@@ -368,6 +368,39 @@ export async function bootstrapPersistState(): Promise<void> {
   }
 }
 
+// zustand 在每一次 store 变更时都会调用 setItem。拖拽分栏、输入等场景下
+// 这相当于每帧一次磁盘写 + 一次 IPC。合并成尾部单次写入，
+// localStorage 仍然同步写，因此读取路径不受影响。
+const UI_STATE_WRITE_DELAY = 400;
+const pendingUiStateWrites = new Map<string, string>();
+let uiStateFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushUiStateWrites(): void {
+  if (uiStateFlushTimer) {
+    clearTimeout(uiStateFlushTimer);
+    uiStateFlushTimer = null;
+  }
+  if (pendingUiStateWrites.size === 0) return;
+
+  const entries = [...pendingUiStateWrites.entries()];
+  pendingUiStateWrites.clear();
+  for (const [key, value] of entries) {
+    void invokeSafe("save_ui_state", { key, value });
+  }
+}
+
+function scheduleUiStateWrite(key: string, value: string): void {
+  pendingUiStateWrites.set(key, value);
+  if (uiStateFlushTimer) return;
+  uiStateFlushTimer = setTimeout(flushUiStateWrites, UI_STATE_WRITE_DELAY);
+}
+
+if (typeof window !== "undefined") {
+  // 退出前落盘，避免丢掉最后一次挂起的写入
+  window.addEventListener("pagehide", flushUiStateWrites);
+  window.addEventListener("beforeunload", flushUiStateWrites);
+}
+
 export const mirroredPersistStorage: StateStorage = {
   getItem: (name) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return null;
@@ -378,13 +411,14 @@ export const mirroredPersistStorage: StateStorage = {
     if (typeof window === "undefined" || !("localStorage" in window)) return;
 
     window.localStorage.setItem(name, value);
-    void invokeSafe("save_ui_state", { key: name, value });
+    scheduleUiStateWrite(name, value);
   },
 
   removeItem: (name) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return;
 
     window.localStorage.removeItem(name);
+    pendingUiStateWrites.delete(name);
     void invokeSafe("remove_ui_state", { key: name });
   },
 };

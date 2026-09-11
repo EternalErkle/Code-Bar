@@ -319,7 +319,9 @@ fn create_popup(app: &tauri::AppHandle) {
         .map(|b| (b.width, b.height))
         .unwrap_or((700.0, 600.0));
 
-    let win = WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("index.html".into()))
+    // 这里曾经是 expect：创建窗口失败（显示器热插拔、GPU 进程重启等）会直接终止进程。
+    // 托盘应用应当保持存活，下一次点击托盘可以再试一次。
+    let win = match WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("index.html".into()))
         .title("")
         .inner_size(default_w, default_h)
         .decorations(false)
@@ -330,10 +332,30 @@ fn create_popup(app: &tauri::AppHandle) {
         .skip_taskbar(true)
         .visible(false)
         .build()
-        .expect("Failed to create popup window");
+    {
+        Ok(win) => win,
+        Err(e) => {
+            eprintln!("[popup] 创建窗口失败: {e}");
+            return;
+        }
+    };
 
     #[cfg(target_os = "macos")]
     setup_popup_window(&win);
+
+    // 关闭按钮 / Alt+F4：隐藏而不是销毁，销毁唯一窗口会连带结束进程。
+    {
+        let close_handle = app.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Some(win) = close_handle.get_webview_window("popup") {
+                    let _ = win.hide();
+                }
+                close_handle.state::<PopupVisible>().set(false);
+            }
+        });
+    }
 
     position_popup(app, &win);
     show_popup(app, &win);

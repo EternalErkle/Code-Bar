@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { useAppI18n } from "../i18n";
 import { useSettingsStore, isGlassTheme, type ThemeMode } from "../store/settingsStore";
@@ -108,8 +109,33 @@ function getClampedTerminalSize(term: Terminal) {
 
 function writePtyData(sessionId: string, data: string) {
   const bytes = new TextEncoder().encode(data);
-  const b64 = btoa(String.fromCharCode(...bytes));
-  return invoke("write_pty", { sessionId, data: b64 });
+  // 分块拼接：整段 spread 在大段粘贴时会超出函数参数上限并抛 RangeError
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK));
+  }
+  return invoke("write_pty", { sessionId, data: btoa(binary) });
+}
+
+/// 不可见终端最多缓冲的输出字节数
+const MAX_PENDING_BYTES = 4 * 1024 * 1024;
+
+/// 每个会话独立的数据事件名，必须与 Rust 侧 pty_data_event 保持一致。
+/// 统一事件名时每条输出都会分发给所有已挂载的终端，开销随会话数放大。
+export function ptyDataEvent(sessionId: string) {
+  return `pty-data:${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+/// base64 → 字节。Uint8Array.from(bin, cb) 会为每个字节调用一次回调，
+/// 在满屏重绘的数据量下这是渲染进程里最热的一段代码。
+export function decodePtyChunk(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 function wheelDeltaToLines(event: WheelEvent, rows: number): number {
@@ -151,6 +177,10 @@ export function PtyTerminal({
   const startedRef = useRef(false);
   const startingRef = useRef(false);
   const launchTokenRef = useRef(0);
+  // 不可见时缓冲输出，激活时一次性回放：
+  // 隐藏的标签页过去照样解析并重绘每一个字节。
+  const pendingWriteRef = useRef<Uint8Array[]>([]);
+  const pendingBytesRef = useRef(0);
   const [exited, setExited] = useState(false);
 
   // 读取当前主题
@@ -181,6 +211,17 @@ export function PtyTerminal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+
+    // WebGL 渲染器：默认的 DOM 渲染在 CLI 满屏重绘时是渲染进程里最大的一笔开销。
+    // GPU 上下文丢失（驱动更新、GPU 进程重启）时回退到 DOM 渲染，避免终端变黑。
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      // 没有可用 GPU 时继续使用 DOM 渲染
+    }
+
     fit.fit();
 
     termRef.current = term;
@@ -315,15 +356,25 @@ export function PtyTerminal({
   // ── 监听 PTY 数据事件 ─────────────────────────────────────
   useEffect(() => {
     const u1 = listen<{ session_id: string; data: string }>(
-      "pty-data",
+      ptyDataEvent(sessionId),
       ({ payload }) => {
         if (payload.session_id !== sessionId) return;
         const term = termRef.current;
         if (!term) return;
         try {
-          const bin = atob(payload.data);
-          const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-          term.write(bytes);
+          const bytes = decodePtyChunk(payload.data);
+          if (activeRef.current) {
+            term.write(bytes);
+            return;
+          }
+          // 面板不可见：先攒着，激活时回放。上限保护内存，
+          // 超出后丢弃最旧的数据（CLI 的整屏重绘会覆盖掉丢失的部分）。
+          pendingWriteRef.current.push(bytes);
+          pendingBytesRef.current += bytes.length;
+          while (pendingBytesRef.current > MAX_PENDING_BYTES && pendingWriteRef.current.length > 1) {
+            const dropped = pendingWriteRef.current.shift();
+            pendingBytesRef.current -= dropped?.length ?? 0;
+          }
         } catch {}
       }
     );
@@ -511,12 +562,24 @@ export function PtyTerminal({
   // ── 可见时 fit + focus（重新展开时恢复焦点，不重启 PTY）──
   useEffect(() => {
     if (!active) return;
+
+    // 回放隐藏期间缓冲的输出
+    const term = termRef.current;
+    if (term && pendingWriteRef.current.length > 0) {
+      const pending = pendingWriteRef.current;
+      pendingWriteRef.current = [];
+      pendingBytesRef.current = 0;
+      for (const chunk of pending) {
+        term.write(chunk);
+      }
+    }
+
     const t = setTimeout(() => {
       fitRef.current?.fit();
-      const term = termRef.current;
-      term?.focus();
-      if (!term) return;
-      invoke("resize_pty", { sessionId, ...getClampedTerminalSize(term) }).catch(() => {});
+      const activeTerm = termRef.current;
+      activeTerm?.focus();
+      if (!activeTerm) return;
+      invoke("resize_pty", { sessionId, ...getClampedTerminalSize(activeTerm) }).catch(() => {});
     }, 80);
     return () => clearTimeout(t);
   }, [active, sessionId]);
@@ -531,17 +594,27 @@ export function PtyTerminal({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // 防抖：拖拽窗口/分栏时 ResizeObserver 每帧都会触发，
+    // 而 fit() 要重算全部字符尺寸，resize_pty 还要走一次 IPC。
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
-      const fit = fitRef.current;
-      const term = termRef.current;
-      if (!fit || !term) return;
-      fit.fit();
-      // 仅在面板可见时同步给 Rust，防止收起时 cols/rows 为 0 导致进程崩溃
-      if (!activeRef.current) return;
-      invoke("resize_pty", { sessionId, ...getClampedTerminalSize(term) }).catch(() => {});
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const fit = fitRef.current;
+        const term = termRef.current;
+        if (!fit || !term) return;
+        fit.fit();
+        // 仅在面板可见时同步给 Rust，防止收起时 cols/rows 为 0 导致进程崩溃
+        if (!activeRef.current) return;
+        invoke("resize_pty", { sessionId, ...getClampedTerminalSize(term) }).catch(() => {});
+      }, 60);
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      if (timer) clearTimeout(timer);
+      ro.disconnect();
+    };
   }, [sessionId]);
 
   const isGlass = isGlassTheme(theme);

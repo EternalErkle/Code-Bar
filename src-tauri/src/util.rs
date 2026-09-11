@@ -16,6 +16,11 @@ pub fn configure_background_command(command: &mut Command) -> &mut Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // 读取类 git 命令默认会获取 index.lock（刷新 stat 缓存）。
+    // 这会被 git watcher 当成一次文件变更，从而触发新的刷新 → 无限自激循环。
+    // GIT_OPTIONAL_LOCKS=0 让 git 跳过这些可选写入。对非 git 命令无副作用。
+    command.env("GIT_OPTIONAL_LOCKS", "0");
+
     command
 }
 

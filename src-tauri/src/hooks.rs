@@ -22,6 +22,12 @@ struct HookCommandSpec {
     shell: Option<&'static str>,
     timeout: Option<u64>,
     status_message: Option<&'static str>,
+    /// 写出 `"async": true`，让 hook 不阻塞 CLI 的这一轮对话。
+    ///
+    /// 这个桥接脚本是单向的：读 stdin、转发到本地端口，不向 CLI 返回任何决策。
+    /// 同步执行时，每次事件都要等解释器冷启动完成，那段时间 CLI 一直在等。
+    /// 仅用于 Claude Code：Codex 的 hooks 配置是否支持该字段未经确认。
+    run_async: bool,
 }
 
 #[cfg(unix)]
@@ -189,6 +195,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell,
                 timeout: None,
                 status_message: None,
+                run_async: true,
             },
             HookCommandSpec {
                 event_name: "Stop",
@@ -197,6 +204,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell,
                 timeout: None,
                 status_message: None,
+                run_async: true,
             },
             HookCommandSpec {
                 event_name: "StopFailure",
@@ -205,6 +213,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell,
                 timeout: None,
                 status_message: None,
+                run_async: true,
             },
             HookCommandSpec {
                 event_name: "Notification",
@@ -213,6 +222,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell,
                 timeout: None,
                 status_message: None,
+                run_async: true,
             },
         ]),
         #[cfg(unix)]
@@ -224,6 +234,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell: None,
                 timeout: Some(5),
                 status_message: None,
+                run_async: false,
             },
             HookCommandSpec {
                 event_name: "Stop",
@@ -232,6 +243,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 shell: None,
                 timeout: Some(5),
                 status_message: None,
+                run_async: false,
             },
         ]),
         #[cfg(not(unix))]
@@ -327,6 +339,9 @@ fn build_hook_entry(spec: &HookCommandSpec) -> Value {
     if let Some(status_message) = spec.status_message {
         hook["statusMessage"] = Value::from(status_message);
     }
+    if spec.run_async {
+        hook["async"] = Value::from(true);
+    }
 
     let mut group = Map::new();
     if let Some(matcher) = spec.matcher {
@@ -392,6 +407,15 @@ fn normalize_managed_hook(hook: &mut Value, spec: &HookCommandSpec) -> bool {
                 changed = true;
             }
         }
+    }
+
+    if spec.run_async {
+        if obj.get("async").and_then(|v| v.as_bool()) != Some(true) {
+            obj.insert("async".to_string(), Value::from(true));
+            changed = true;
+        }
+    } else if obj.remove("async").is_some() {
+        changed = true;
     }
 
     changed

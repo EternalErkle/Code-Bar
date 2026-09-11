@@ -22,6 +22,8 @@ pub type PtyMasterMap = Arc<Mutex<HashMap<String, Box<dyn portable_pty::MasterPt
 pub struct PtySessionMeta {
     pub runner_type: String,
     pub workdir: String,
+    /// 全局单调递增的启动代次。读取线程用它判断自己是否已被同 id 的新会话取代。
+    pub generation: u64,
 }
 
 /// session_id → PTY 会话元信息（用于 hooks 事件精确路由）

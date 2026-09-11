@@ -121,7 +121,11 @@ pub async fn get_git_status(
     workdir: String,
 ) -> Result<(), String> {
     let expanded = expand_path(&workdir);
-    let groups = get_git_status_raw(&expanded)?;
+    // git 调用是阻塞 I/O：直接在 async 命令里跑会占满 tokio worker，
+    // 刷新频繁时会拖住其它 IPC（例如启动会话）。
+    let groups = tokio::task::spawn_blocking(move || get_git_status_raw(&expanded))
+        .await
+        .map_err(|e| e.to_string())??;
     let _ = app.emit(
         "scm-status-update",
         serde_json::json!({"session_id": session_id, "groups": groups}),

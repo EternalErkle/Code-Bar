@@ -61,6 +61,62 @@ fn resolve_git_watch_targets(workdir: &str) -> Result<(PathBuf, PathBuf, Vec<Pat
     Ok((worktree_root, git_dir_abs, targets))
 }
 
+/// 与 SCM 状态无关、但写入极其频繁的路径。
+///
+/// 不过滤这些会造成两类问题：
+/// 1. git 自身的锁/对象写入会把本应用发起的刷新变成新的刷新事件（自激循环）；
+/// 2. 依赖目录与构建产物在 CLI 工作时每秒产生成百上千次事件。
+fn is_ignored_path(worktree_root: &Path, git_dir: &Path, path: &Path) -> bool {
+    const IGNORED_DIRS: &[&str] = &[
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "out",
+        ".next",
+        ".turbo",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".gradle",
+        ".idea",
+        ".DS_Store",
+    ];
+
+    if path.starts_with(git_dir) {
+        // git 内部：只有引用与索引变更值得刷新
+        let relative = path.strip_prefix(git_dir).unwrap_or(path);
+        let relative_str = relative.to_string_lossy().replace('\\', "/");
+        if relative_str.starts_with("objects/")
+            || relative_str.starts_with("logs/")
+            || relative_str.starts_with("lfs/")
+            || relative_str.starts_with("modules/")
+        {
+            return true;
+        }
+        if relative_str.ends_with(".lock")
+            || relative_str.ends_with("COMMIT_EDITMSG")
+            || relative_str.ends_with("FETCH_HEAD")
+            || relative_str.ends_with("ORIG_HEAD")
+        {
+            return true;
+        }
+        return false;
+    }
+
+    // 只检查工作区内部的片段：绝对路径的上层目录可能恰好叫 build/out 之类，
+    // 按整条路径匹配会把整个仓库都忽略掉。
+    let Ok(relative) = path.strip_prefix(worktree_root) else {
+        return false;
+    };
+
+    relative.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        IGNORED_DIRS.iter().any(|ignored| name == *ignored)
+    })
+}
+
 fn should_emit_for_event(worktree_root: &Path, git_dir: &Path, event: &Event) -> bool {
     let relevant_kind = matches!(
         event.kind,
@@ -80,7 +136,10 @@ fn should_emit_for_event(worktree_root: &Path, git_dir: &Path, event: &Event) ->
         return false;
     }
 
-    event.paths.iter().any(|path| path.starts_with(worktree_root) || path.starts_with(git_dir))
+    event.paths.iter().any(|path| {
+        (path.starts_with(worktree_root) || path.starts_with(git_dir))
+            && !is_ignored_path(worktree_root, git_dir, path)
+    })
 }
 
 fn to_relative_path(worktree_root: &Path, path: &Path) -> Option<String> {

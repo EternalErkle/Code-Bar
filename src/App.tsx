@@ -84,6 +84,10 @@ export default function App() {
   const refreshInFlightRef = useRef<Record<string, Promise<void> | null>>({});
   const refreshQueuedRef = useRef<Record<string, boolean>>({});
   const refreshQueuedOptionsRef = useRef<Record<string, { reloadExplorer?: boolean; reloadDirs?: string[] } | undefined>>({});
+  const refreshLastRunAtRef = useRef<Record<string, number>>({});
+  const refreshCooldownTimerRef = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+  /// 同一个 session 两轮 git 刷新之间的最小间隔
+  const MIN_REFRESH_INTERVAL = 400;
   const startedWatcherSessionsRef = useRef<Set<string>>(new Set());
   const watchedWorkdirBySessionRef = useRef<Record<string, string>>({});
   const [frontendErrorLogs, setFrontendErrorLogs] = useState<FrontendErrorLog[]>([]);
@@ -478,15 +482,39 @@ export default function App() {
     const targetId = sessionId ?? useSessionStore.getState().activeSessionId;
     if (!targetId) return;
 
-    if (refreshInFlightRef.current[targetId]) {
+    const queueRefresh = () => {
       refreshQueuedRef.current[targetId] = true;
       const previousOptions = refreshQueuedOptionsRef.current[targetId];
       refreshQueuedOptionsRef.current[targetId] = {
         reloadExplorer: previousOptions?.reloadExplorer || options?.reloadExplorer,
         reloadDirs: [...new Set([...(previousOptions?.reloadDirs ?? []), ...(options?.reloadDirs ?? [])])],
       };
+    };
+
+    if (refreshInFlightRef.current[targetId]) {
+      queueRefresh();
       return;
     }
+
+    // 冷却窗口：文件监听事件是成串到达的，每串都跑一整轮 git
+    // 会让刷新本身成为 CPU 大头。窗口内的请求合并成一次尾部刷新。
+    const sinceLastRun = Date.now() - (refreshLastRunAtRef.current[targetId] ?? 0);
+    if (sinceLastRun < MIN_REFRESH_INTERVAL) {
+      queueRefresh();
+      if (!refreshCooldownTimerRef.current[targetId]) {
+        refreshCooldownTimerRef.current[targetId] = setTimeout(() => {
+          delete refreshCooldownTimerRef.current[targetId];
+          if (!refreshQueuedRef.current[targetId]) return;
+          refreshQueuedRef.current[targetId] = false;
+          const queuedOptions = refreshQueuedOptionsRef.current[targetId];
+          delete refreshQueuedOptionsRef.current[targetId];
+          refreshSessionDiff(targetId, queuedOptions);
+        }, MIN_REFRESH_INTERVAL - sinceLastRun);
+      }
+      return;
+    }
+
+    refreshLastRunAtRef.current[targetId] = Date.now();
 
     const runRefresh = async () => {
       const session = useSessionStore.getState().sessions.find((s) => s.id === targetId);
@@ -935,12 +963,24 @@ export default function App() {
     const minWidth = 280;
     const maxWidth = 560;
 
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX)));
+    // 按帧合并：pointermove 每秒能触发上百次，
+    // 每次都写 store 会连带触发持久化与整棵树的重渲染。
+    let frame: number | null = null;
+    let nextWidth = startWidth;
+
+    const applyWidth = () => {
+      frame = null;
       patchSettings({ splitPaneSidebarWidth: nextWidth });
     };
 
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      nextWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX)));
+      if (frame === null) frame = requestAnimationFrame(applyWidth);
+    };
+
     const handlePointerUp = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      applyWidth();
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
@@ -956,15 +996,26 @@ export default function App() {
     const minWidth = 220;
     const maxWidth = 720;
 
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth - (moveEvent.clientX - startX))));
+    // 同上：按帧合并 pointermove，避免每次移动都写 store
+    let frame: number | null = null;
+    let nextWidth = startWidth;
+
+    const applyWidth = () => {
+      frame = null;
       patchSettings({
         splitWidgetPanelWidth: nextWidth,
         splitWidgetPanelCollapsed: false,
       });
     };
 
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      nextWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth - (moveEvent.clientX - startX))));
+      if (frame === null) frame = requestAnimationFrame(applyWidth);
+    };
+
     const handlePointerUp = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      applyWidth();
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };

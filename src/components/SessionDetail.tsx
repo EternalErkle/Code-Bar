@@ -5,6 +5,7 @@ import { useAppI18n } from "../i18n";
 import { useSessionStore } from "../store/sessionStore";
 import { useSettingsStore, isGlassTheme } from "../store/settingsStore";
 import { TrafficLights } from "./TrafficLights";
+import { decodePtyChunk, ptyDataEvent } from "./PtyTerminal";
 import { SessionPromptComposer } from "./session/SessionPromptComposer";
 import { SessionRunnerSurface } from "./session/SessionRunnerSurface";
 import { useSessionRunnerController } from "../hooks/useSessionRunnerController";
@@ -107,12 +108,10 @@ function InstallTerminal({ installId, installCmd, onFinished }: InstallTerminalP
         term?.writeln(`\x1b[31m${t("session.installFailed", { error: String(e) })}\x1b[0m`);
       });
 
-      const u1 = listen<{ session_id: string; data: string }>("pty-data", ({ payload }) => {
+      const u1 = listen<{ session_id: string; data: string }>(ptyDataEvent(installId), ({ payload }) => {
         if (payload.session_id !== installId) return;
         try {
-          const bin = atob(payload.data);
-          const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-          termRef.current?.write(bytes);
+          termRef.current?.write(decodePtyChunk(payload.data));
         } catch {}
       });
 

@@ -124,6 +124,21 @@ pub fn run() {
             window::position_popup(app.handle(), &win);
             window::show_popup(app.handle(), &win);
 
+            // Alt+F4 / 系统关闭按钮：隐藏窗口而不是销毁它。
+            // 销毁会连带结束进程（唯一窗口），用户会把它当成崩溃。
+            {
+                let close_handle = app.handle().clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Some(win) = close_handle.get_webview_window("popup") {
+                            let _ = win.hide();
+                        }
+                        close_handle.state::<state::PopupVisible>().set(false);
+                    }
+                });
+            }
+
             // 系统托盘
             let quit_item = MenuItem::with_id(app, "quit", "退出 Code Bar", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&quit_item])?;
@@ -263,9 +278,20 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app, event| {
-        #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Reopen { .. } = event {
-            window::show_popup_only(app.clone());
+        let _ = &app;
+        match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                window::show_popup_only(app.clone());
+            }
+            // 托盘常驻应用：弹窗是唯一窗口，窗口关闭不应结束进程。
+            // 只有托盘菜单「退出」走 app.exit(code)，此时 code 为 Some，放行。
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+            _ => {}
         }
     });
 }

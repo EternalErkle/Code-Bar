@@ -199,6 +199,25 @@ function matchesDeletedWorkspace(
   });
 }
 
+/// 清掉体积大且可重新计算的字段。
+///
+/// diffFiles 是真正的元凶：单个 session 的 diff 可以达到几百 KB，
+/// 而 localStorage 按 UTF-16 计量，几个 session 就能顶满 ~5MB 配额，
+/// 之后任何一次写入都会抛 QuotaExceededError 并打断当次交互。
+///
+/// sessionStore 的 partialize 已经不再写出这些字段，但历史遗留的文件
+/// 里仍然存着，合并时若原样搬运就会把它们重新注入 localStorage。
+/// 这里按 partialize 的形状归一化（保留空数组而不是删除键），
+/// 避免消费方遇到 undefined。
+function sanitizePersistedSession<T extends PersistedSessionLike>(session: T): T {
+  return {
+    ...session,
+    diffFiles: [],
+    output: [],
+    pid: undefined,
+  } as T;
+}
+
 function mergeSessionValue(
   fileValue: string | null,
   localValue: string | null,
@@ -214,8 +233,12 @@ function mergeSessionValue(
   const shouldKeepSession = (session: PersistedSessionLike) =>
     !!session?.id && !matchesDeletedSession(deleted, session);
 
-  const localSessions = (localState?.state?.sessions ?? []).filter(shouldKeepSession);
-  const fileSessions = (fileState?.state?.sessions ?? []).filter(shouldKeepSession);
+  const localSessions = (localState?.state?.sessions ?? [])
+    .filter(shouldKeepSession)
+    .map(sanitizePersistedSession);
+  const fileSessions = (fileState?.state?.sessions ?? [])
+    .filter(shouldKeepSession)
+    .map(sanitizePersistedSession);
   const mergedSessions = [...localSessions];
   const existingIds = new Set(localSessions.map((session) => session.id));
 
@@ -354,7 +377,7 @@ export async function bootstrapPersistState(): Promise<void> {
 
     if (mergedValue !== null) {
       if (window.localStorage.getItem(key) !== mergedValue) {
-        window.localStorage.setItem(key, mergedValue);
+        safeLocalSet(key, mergedValue);
       }
       if (fileValue !== mergedValue) {
         void invokeSafe("save_ui_state", { key, value: mergedValue });
@@ -401,6 +424,30 @@ if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", flushUiStateWrites);
 }
 
+/// 写入 localStorage，配额不足时降级而不是抛异常。
+///
+/// zustand 的 persist 中间件在 store 更新过程中同步调用 setItem，
+/// 因此一次 QuotaExceededError 会穿透到 React 事件处理里，
+/// 表现为点击切换 session 直接报未捕获错误。
+/// 文件镜像才是权威副本，丢掉这次缓存写入是安全的。
+function safeLocalSet(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn(`[persist] localStorage 写入失败，改用文件镜像: ${key}`, error);
+    // 残留的超大旧值会一直占着配额，导致后续写入全部失败。
+    // 此时文件写入已经排好队，移除缓存键可以自愈；
+    // 下次启动会从文件重新填充。
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // 忽略：已经处于降级状态
+    }
+    return false;
+  }
+}
+
 export const mirroredPersistStorage: StateStorage = {
   getItem: (name) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return null;
@@ -410,8 +457,10 @@ export const mirroredPersistStorage: StateStorage = {
   setItem: (name, value) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return;
 
-    window.localStorage.setItem(name, value);
+    // 先排队文件写入：它是权威副本且不受配额限制。
+    // 顺序很重要——safeLocalSet 在失败时会移除缓存键。
     scheduleUiStateWrite(name, value);
+    safeLocalSet(name, value);
   },
 
   removeItem: (name) => {

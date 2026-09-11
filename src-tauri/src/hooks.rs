@@ -19,6 +19,9 @@ struct HookCommandSpec {
     event_name: &'static str,
     matcher: Option<&'static str>,
     command: String,
+    /// 存在时切换到 exec 形式：command 作为可执行文件直接启动，不经过任何 shell。
+    /// 此时 `shell` 字段会被 CLI 忽略，必须保持为 None。
+    args: Option<Vec<String>>,
     shell: Option<&'static str>,
     timeout: Option<u64>,
     status_message: Option<&'static str>,
@@ -113,6 +116,84 @@ fn windows_bridge_script_path() -> Result<PathBuf, String> {
 }
 
 #[cfg(not(unix))]
+fn windows_bridge_node_script_path() -> Result<PathBuf, String> {
+    Ok(windows_hook_dir()?.join("hook-bridge.js"))
+}
+
+/// Node 版桥接脚本，与 PowerShell 版行为一致。
+///
+/// Windows 上每次 hook 事件都要冷启动一次解释器。实测同一台机器上，
+/// PowerShell 版约 256ms/次，Node 版约 93ms/次。
+/// claude / codex 本身就是 Node 程序，所以 node 一定存在。
+#[cfg(not(unix))]
+const WINDOWS_BRIDGE_NODE_SCRIPT: &str = r##""use strict";
+// Code Bar hook bridge：读取 hook 负载，注入会话标识后转发到本地端口。
+const net = require("net");
+
+const source = process.argv[2] || "";
+const port = Number(process.argv[3] || 0);
+const payloadArgs = process.argv.slice(4);
+
+function send(raw) {
+  if (!raw || !raw.trim()) process.exit(0);
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (e) {
+    process.exit(0);
+  }
+  if (!payload || typeof payload !== "object") process.exit(0);
+
+  if (process.env.CODE_BAR_SESSION_ID) {
+    payload.code_bar_session_id = process.env.CODE_BAR_SESSION_ID;
+  }
+  if (process.env.CODE_BAR_RUNNER_TYPE) {
+    payload.code_bar_runner_type = process.env.CODE_BAR_RUNNER_TYPE;
+  }
+  payload.code_bar_source = source;
+
+  const socket = net.connect(port, "127.0.0.1", function () {
+    socket.end(JSON.stringify(payload));
+  });
+  socket.on("error", function () {
+    process.exit(0);
+  });
+}
+
+// Codex 用命令行参数传负载，Claude 用 stdin。
+// 有参数时不去读 stdin，否则在没有管道输入的场景下会一直等待。
+if (payloadArgs.length > 0) {
+  send(payloadArgs.join(" "));
+} else {
+  let raw = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", function (chunk) {
+    raw += chunk;
+  });
+  process.stdin.on("end", function () {
+    send(raw);
+  });
+  process.stdin.on("error", function () {
+    process.exit(0);
+  });
+}
+"##;
+
+/// 可用的 node 解释器绝对路径。
+///
+/// exec 形式要求 command 指向真正的可执行文件，解析不到就回退 PowerShell。
+#[cfg(not(unix))]
+fn windows_bridge_node() -> Option<String> {
+    let resolved = crate::cli_detect::resolve_command_path("node");
+    let path = std::path::Path::new(&resolved);
+    if path.is_absolute() && path.exists() {
+        return Some(resolved);
+    }
+    None
+}
+
+#[cfg(not(unix))]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -130,6 +211,17 @@ fn powershell_script_command(source: HookSource) -> Result<String, String> {
 
 #[cfg(not(unix))]
 fn codex_notify_command() -> Result<Vec<String>, String> {
+    // Codex 的 notify 本身就是「程序 + 参数」数组，直接换成 node 即可
+    if let Some(node) = windows_bridge_node() {
+        let node_script = windows_bridge_node_script_path()?;
+        return Ok(vec![
+            node,
+            node_script.to_string_lossy().to_string(),
+            HookSource::Codex.label().to_string(),
+            HookSource::Codex.tcp_port().to_string(),
+        ]);
+    }
+
     let script = windows_bridge_script_path()?;
     Ok(vec![
         WINDOWS_POWERSHELL.to_string(),
@@ -170,6 +262,9 @@ fn write_text_file_if_changed(path: &PathBuf, content: &str) -> Result<(), Strin
 fn ensure_windows_hook_bridge_assets() -> Result<(), String> {
     let script_path = windows_bridge_script_path()?;
     write_text_file_if_changed(&script_path, WINDOWS_BRIDGE_SCRIPT)?;
+    // 两个脚本都写出：node 解析失败时仍要能回退到 PowerShell 版
+    let node_script_path = windows_bridge_node_script_path()?;
+    write_text_file_if_changed(&node_script_path, WINDOWS_BRIDGE_NODE_SCRIPT)?;
     Ok(())
 }
 
@@ -179,12 +274,55 @@ fn hook_bridge_command(source: HookSource) -> Result<String, String> {
     powershell_script_command(source)
 }
 
+/// 桥接脚本的调用方式。
+struct BridgeInvocation {
+    command: String,
+    args: Option<Vec<String>>,
+    shell: Option<&'static str>,
+}
+
+#[cfg(unix)]
+fn hook_bridge_invocation(source: HookSource) -> Result<BridgeInvocation, String> {
+    Ok(BridgeInvocation {
+        command: hook_bridge_command(source)?,
+        args: None,
+        shell: None,
+    })
+}
+
+#[cfg(not(unix))]
+fn hook_bridge_invocation(source: HookSource) -> Result<BridgeInvocation, String> {
+    ensure_windows_hook_bridge_assets()?;
+
+    // 首选 exec 形式 + node：完全不经过 shell，解释器启动成本约为 PowerShell 的三分之一
+    if let Some(node) = windows_bridge_node() {
+        let script = windows_bridge_node_script_path()?;
+        return Ok(BridgeInvocation {
+            command: node,
+            args: Some(vec![
+                script.to_string_lossy().to_string(),
+                source.label().to_string(),
+                source.tcp_port().to_string(),
+            ]),
+            // args 存在时 shell 字段会被忽略，这里必须留空
+            shell: None,
+        });
+    }
+
+    // 回退：解析不到 node 时继续走 PowerShell 脚本
+    Ok(BridgeInvocation {
+        command: powershell_script_command(source)?,
+        args: None,
+        shell: Some("powershell"),
+    })
+}
+
 fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
-    let command = hook_bridge_command(source)?;
-    #[cfg(unix)]
-    let shell = None;
-    #[cfg(not(unix))]
-    let shell = Some("powershell");
+    let BridgeInvocation {
+        command,
+        args,
+        shell,
+    } = hook_bridge_invocation(source)?;
 
     match source {
         HookSource::ClaudeCode => Ok(vec![
@@ -192,6 +330,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "UserPromptSubmit",
                 matcher: Some(""),
                 command: command.clone(),
+                args: args.clone(),
                 shell,
                 timeout: None,
                 status_message: None,
@@ -201,6 +340,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "Stop",
                 matcher: Some(""),
                 command: command.clone(),
+                args: args.clone(),
                 shell,
                 timeout: None,
                 status_message: None,
@@ -210,6 +350,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "StopFailure",
                 matcher: Some(""),
                 command: command.clone(),
+                args: args.clone(),
                 shell,
                 timeout: None,
                 status_message: None,
@@ -219,6 +360,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "Notification",
                 matcher: Some(""),
                 command,
+                args: args.clone(),
                 shell,
                 timeout: None,
                 status_message: None,
@@ -231,6 +373,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "UserPromptSubmit",
                 matcher: None,
                 command: command.clone(),
+                args: args.clone(),
                 shell: None,
                 timeout: Some(5),
                 status_message: None,
@@ -240,6 +383,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 event_name: "Stop",
                 matcher: None,
                 command,
+                args: args.clone(),
                 shell: None,
                 timeout: Some(5),
                 status_message: None,
@@ -289,18 +433,64 @@ fn is_managed_command(command: &str, source: HookSource) -> bool {
 
     #[cfg(not(unix))]
     {
+        let fingerprint = command.contains("hook-bridge.ps1")
+            || command.contains("hook-bridge.js")
+            || command.contains(".codebar")
+            || (command.contains(WINDOWS_POWERSHELL) && command.contains("EncodedCommand"));
+        if fingerprint {
+            return true;
+        }
         hook_bridge_command(source)
-            .map(|managed| {
-                command == managed
-                    || command.contains("hook-bridge.ps1")
-                    || command.contains(".codebar")
-                    || (command.contains(WINDOWS_POWERSHELL) && command.contains("EncodedCommand"))
-            })
-            .unwrap_or_else(|_| {
-                command.contains("hook-bridge.ps1")
-                    || command.contains(".codebar")
-                    || (command.contains(WINDOWS_POWERSHELL) && command.contains("EncodedCommand"))
-            })
+            .map(|managed| command == managed)
+            .unwrap_or(false)
+    }
+}
+
+/// 把 hook 条目的 command 与 args 拼成一条用于指纹匹配的字符串。
+///
+/// exec 形式下脚本路径在 args 里，command 只是解释器路径。
+/// 只看 command 会认不出自己写过的条目：旧条目永远不被清理，
+/// 同时每次启动又追加一条新的，hooks 数组会不断堆积。
+fn managed_hook_haystack(hook: &Value) -> String {
+    let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let args = hook
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    format!("{command} {args}")
+}
+
+fn is_managed_hook(hook: &Value, source: HookSource) -> bool {
+    is_managed_command(&managed_hook_haystack(hook), source)
+}
+
+/// 条目是否与 spec 完全一致：command 和 args 都要匹配。
+fn hook_matches_spec(hook: &Value, spec: &HookCommandSpec) -> bool {
+    if hook.get("command").and_then(|v| v.as_str()) != Some(spec.command.as_str()) {
+        return false;
+    }
+
+    let hook_args: Vec<&str> = hook
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    match &spec.args {
+        Some(args) => {
+            hook_args.len() == args.len()
+                && hook_args
+                    .iter()
+                    .zip(args.iter())
+                    .all(|(actual, expected)| *actual == expected.as_str())
+        }
+        None => hook_args.is_empty(),
     }
 }
 
@@ -330,6 +520,9 @@ fn build_hook_entry(spec: &HookCommandSpec) -> Value {
         "type": "command",
         "command": spec.command.clone(),
     });
+    if let Some(args) = &spec.args {
+        hook["args"] = Value::Array(args.iter().map(|a| Value::from(a.clone())).collect());
+    }
     if let Some(shell) = spec.shell {
         hook["shell"] = Value::from(shell);
     }
@@ -376,6 +569,21 @@ fn normalize_managed_hook(hook: &mut Value, spec: &HookCommandSpec) -> bool {
         }
         None => {
             if obj.remove("shell").is_some() {
+                changed = true;
+            }
+        }
+    }
+
+    match &spec.args {
+        Some(args) => {
+            let desired = Value::Array(args.iter().map(|a| Value::from(a.clone())).collect());
+            if obj.get("args") != Some(&desired) {
+                obj.insert("args".to_string(), desired);
+                changed = true;
+            }
+        }
+        None => {
+            if obj.remove("args").is_some() {
                 changed = true;
             }
         }
@@ -464,8 +672,7 @@ fn merge_hook_specs(
             let before_len = hook_arr.len();
 
             hook_arr.retain_mut(|hook| {
-                let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                if command == spec.command {
+                if hook_matches_spec(hook, spec) {
                     if has_current_command {
                         event_changed = true;
                         return false;
@@ -476,7 +683,7 @@ fn merge_hook_specs(
                     }
                     return true;
                 }
-                if is_managed_command(command, source) {
+                if is_managed_hook(hook, source) {
                     event_changed = true;
                     return false;
                 }
@@ -547,10 +754,7 @@ fn strip_managed_hooks(root: &mut Value, source: HookSource) -> bool {
             };
 
             let before_hook_len = hook_arr.len();
-            hook_arr.retain(|hook| {
-                let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                !is_managed_command(command, source)
-            });
+            hook_arr.retain(|hook| !is_managed_hook(hook, source));
             if hook_arr.len() != before_hook_len {
                 changed = true;
             }

@@ -34,6 +34,8 @@ export interface DiffLine {
 export interface ClaudeSession {
   id: string;
   name: string;
+  /// 用户在创建时显式命名过；首条消息的自动命名不应覆盖它
+  nameIsCustom?: boolean;
   workspaceId: string;   // 归属的 Workspace ID
   workdir: string;       // 冗余存储，方便直接传给 PTY
   status: SessionStatus;
@@ -201,6 +203,8 @@ function makeSession(
     diffFiles: [],
     output: [],
     ...overrides,
+    // 显式传入 name 即视为用户自定义，之后自动命名不再覆盖
+    nameIsCustom: overrides.nameIsCustom ?? overrides.name !== undefined,
     runner: hydrateRunnerConfig(overrides.runner),
   };
 }

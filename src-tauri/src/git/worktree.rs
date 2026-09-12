@@ -441,3 +441,70 @@ pub async fn prune_orphan_worktrees(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_normalizes_spacing_and_case() {
+        assert_eq!(worktree_slug("login fix").as_deref(), Some("login-fix"));
+        assert_eq!(worktree_slug("  Login   Fix!!  ").as_deref(), Some("login-fix"));
+        assert_eq!(worktree_slug("Fix/Auth#2").as_deref(), Some("fix-auth-2"));
+    }
+
+    #[test]
+    fn slug_rejects_names_with_no_usable_characters() {
+        assert_eq!(worktree_slug(""), None);
+        assert_eq!(worktree_slug("   "), None);
+        assert_eq!(worktree_slug("!!!///"), None);
+    }
+
+    #[test]
+    fn slug_avoids_windows_reserved_device_names() {
+        assert_eq!(worktree_slug("CON").as_deref(), Some("con-wt"));
+        assert_eq!(worktree_slug("nul").as_deref(), Some("nul-wt"));
+        // 只有完全等于保留名时才加后缀
+        assert_eq!(worktree_slug("console").as_deref(), Some("console"));
+    }
+
+    #[test]
+    fn slug_truncates_without_leaving_trailing_dash() {
+        let slug = worktree_slug(&"a".repeat(60)).expect("slug");
+        assert_eq!(slug.chars().count(), 48);
+
+        // 截断点正好落在分隔符上：第 48 个字符是横线，必须被去掉
+        let awkward = format!("{} tail", "b".repeat(47));
+        let slug = worktree_slug(&awkward).expect("slug");
+        assert!(!slug.ends_with('-'), "slug ended with dash: {slug}");
+        assert_eq!(slug, "b".repeat(47));
+    }
+
+    #[test]
+    fn unique_path_appends_suffix_instead_of_reusing_existing_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "code-bar-wt-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&base).expect("temp base");
+        let base_str = base.to_string_lossy().to_string();
+
+        let first = unique_worktree_path(&base_str, "feature");
+        assert!(first.ends_with("feature"), "unexpected first path: {first}");
+
+        // 目录被占用后必须换一个新路径，而不是复用
+        fs::create_dir_all(&first).expect("first dir");
+        let second = unique_worktree_path(&base_str, "feature");
+        assert_ne!(first, second);
+        assert!(second.ends_with("feature-2"), "unexpected second path: {second}");
+
+        fs::create_dir_all(&second).expect("second dir");
+        let third = unique_worktree_path(&base_str, "feature");
+        assert!(third.ends_with("feature-3"), "unexpected third path: {third}");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+}

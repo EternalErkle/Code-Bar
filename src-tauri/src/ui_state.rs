@@ -33,6 +33,8 @@ struct RecoveredRunnerConfig {
 pub struct RecoveredSession {
     id: String,
     name: String,
+    /// 目录名来自用户自定义名称时为 true，首条消息不应覆盖它
+    name_is_custom: bool,
     workspace_id: String,
     workdir: String,
     status: String,
@@ -802,6 +804,36 @@ fn numeric_session_id(name: &str) -> Option<String> {
     }
 }
 
+/// worktree 路径 → session id 的反查表。
+/// 用户自定义名称的目录不再内嵌 session id，只能靠恢复绑定记录的路径认领。
+fn worktree_owner_index(bindings: &HashMap<String, RecoveryBinding>) -> HashMap<String, String> {
+    bindings
+        .values()
+        .filter_map(|binding| {
+            let path = normalize_path(binding.worktree_path.clone())?;
+            Some((path, binding.session_id.clone()))
+        })
+        .collect()
+}
+
+/// worktree 目录 → (session id, 名称是否用户自定义)。
+/// 绑定文件是显式记录，优先于按目录名猜测：用户把 session 命名为
+/// “session 123”时 slug 与旧式编号目录同形，只看目录名会认错 id。
+fn resolve_worktree_session(
+    dir_name: &str,
+    worktree_key: &str,
+    worktree_owner: &HashMap<String, String>,
+) -> Option<(String, bool)> {
+    match worktree_owner.get(worktree_key) {
+        Some(id) => {
+            // 目录名正是该 id 的旧式写法时才算自动命名，其余都是用户起的名字
+            let is_legacy = numeric_session_id(dir_name).as_deref() == Some(id.as_str());
+            Some((id.clone(), !is_legacy))
+        }
+        None => numeric_session_id(dir_name).map(|id| (id, false)),
+    }
+}
+
 fn parse_numeric_session_id(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
@@ -1141,6 +1173,7 @@ pub async fn recover_workspace_sessions(
         .collect::<HashMap<_, _>>();
     let codex_history = load_codex_history_index();
     let existing = existing_session_ids.into_iter().collect::<HashSet<_>>();
+    let worktree_owner = worktree_owner_index(&recovery_bindings);
     let mut recovered = Vec::new();
 
     for workspace in workspaces {
@@ -1169,7 +1202,10 @@ pub async fn recover_workspace_sessions(
             let Some(dir_name) = worktree_path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let Some(session_id) = numeric_session_id(dir_name) else {
+            let worktree_key = normalize_expanded_path(&worktree_path.to_string_lossy());
+            let Some((session_id, name_is_custom)) =
+                resolve_worktree_session(dir_name, &worktree_key, &worktree_owner)
+            else {
                 continue;
             };
             if existing.contains(&session_id) || deleted_state.session_ids.contains(&session_id) {
@@ -1206,7 +1242,13 @@ pub async fn recover_workspace_sessions(
 
             recovered.push(RecoveredSession {
                 id: session_id.clone(),
-                name: normalize_task_title(&current_task, &session_id),
+                // 自定义目录名就是用户起的名字，优先于用任务摘要当标题
+                name: if name_is_custom {
+                    dir_name.to_string()
+                } else {
+                    normalize_task_title(&current_task, &session_id)
+                },
+                name_is_custom,
                 workspace_id: workspace.workspace_id.clone(),
                 workdir: workdir.clone(),
                 status: "idle".to_string(),
@@ -1231,4 +1273,77 @@ pub async fn recover_workspace_sessions(
 
     recovered.sort_by_key(|session| session.id.parse::<u64>().unwrap_or(u64::MAX));
     Ok(recovered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(session_id: &str, worktree_path: &str) -> RecoveryBinding {
+        RecoveryBinding {
+            session_id: session_id.to_string(),
+            runner_type: "claude-code".to_string(),
+            provider_session_id: "provider-1".to_string(),
+            worktree_path: Some(worktree_path.to_string()),
+            updated_at_ms: 0,
+        }
+    }
+
+    fn owner_index(bindings: Vec<RecoveryBinding>) -> HashMap<String, String> {
+        let by_session = bindings
+            .into_iter()
+            .map(|entry| (entry.session_id.clone(), entry))
+            .collect::<HashMap<_, _>>();
+        worktree_owner_index(&by_session)
+    }
+
+    fn key(path: &str) -> String {
+        normalize_expanded_path(path)
+    }
+
+    #[test]
+    fn legacy_numeric_dir_recovers_without_binding() {
+        let owner = owner_index(vec![]);
+        assert_eq!(
+            resolve_worktree_session("session-7", &key("/repo/.worktrees/session-7"), &owner),
+            Some(("7".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn slug_dir_recovers_via_binding_and_keeps_custom_name() {
+        let owner = owner_index(vec![binding("12", "/repo/.worktrees/login-fix")]);
+        assert_eq!(
+            resolve_worktree_session("login-fix", &key("/repo/.worktrees/login-fix"), &owner),
+            Some(("12".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn binding_outranks_numeric_dir_name() {
+        // 用户把 session 命名为 “session 123”，slug 与旧式编号目录同形
+        let owner = owner_index(vec![binding("9", "/repo/.worktrees/session-123")]);
+        assert_eq!(
+            resolve_worktree_session("session-123", &key("/repo/.worktrees/session-123"), &owner),
+            Some(("9".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn legacy_dir_matching_its_own_binding_is_not_custom() {
+        let owner = owner_index(vec![binding("123", "/repo/.worktrees/session-123")]);
+        assert_eq!(
+            resolve_worktree_session("session-123", &key("/repo/.worktrees/session-123"), &owner),
+            Some(("123".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn slug_dir_without_binding_is_skipped() {
+        let owner = owner_index(vec![]);
+        assert_eq!(
+            resolve_worktree_session("login-fix", &key("/repo/.worktrees/login-fix"), &owner),
+            None
+        );
+    }
 }

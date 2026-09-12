@@ -166,7 +166,12 @@ export function useSessionRunnerController({
     if (!trimmed || !session) return;
     const title = trimmed.length > 24 ? trimmed.slice(0, 24) + "…" : trimmed;
     lastQuerySentAtRef.current = Date.now();
-    updateSession(session.id, { name: title, currentTask: trimmed, status: "running" });
+    // 用户自定义的名称要保留，只有默认名才被首条消息覆盖
+    updateSession(session.id, {
+      ...(session.nameIsCustom ? {} : { name: title }),
+      currentTask: trimmed,
+      status: "running",
+    });
     setQuerySent(true);
 
     if (ptyReadyRef.current) {

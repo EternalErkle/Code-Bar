@@ -43,7 +43,7 @@ pub struct SessionDirectoryListResult {
 }
 
 fn session_root(app: &tauri::AppHandle, session_id: &str) -> Result<PathBuf, String> {
-    let sanitized = session_id.trim();
+    let sanitized = crate::util::sanitize_fs_component(session_id.trim());
     if sanitized.is_empty() {
         return Err("缺少 session id".into());
     }
@@ -104,6 +104,17 @@ fn resolve_session_file(
         return Err("文件路径超出 session 根目录".into());
     }
 
+    // 叶子节点若已存在（可能是符号链接），必须一并 canonicalize：
+    // 上面只校验了父目录，指向 session 根目录之外的叶子符号链接会绕过检查。
+    if joined.symlink_metadata().is_ok() {
+        let canonical_leaf = joined
+            .canonicalize()
+            .map_err(|e| format!("解析目标路径失败 {}: {e}", joined.display()))?;
+        if !canonical_leaf.starts_with(&root) {
+            return Err("文件路径超出 session 根目录".into());
+        }
+    }
+
     Ok(joined)
 }
 
@@ -133,7 +144,7 @@ pub fn remember_session_workdir(
     session_id: String,
     workdir: String,
 ) -> Result<(), String> {
-    let sanitized = session_id.trim();
+    let sanitized = crate::util::sanitize_fs_component(session_id.trim());
     if sanitized.is_empty() {
         return Err("缺少 session id".into());
     }
@@ -153,7 +164,7 @@ pub fn remember_session_workdir(
 
 #[tauri::command]
 pub fn remove_session_workdir(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
-    let sanitized = session_id.trim();
+    let sanitized = crate::util::sanitize_fs_component(session_id.trim());
     if sanitized.is_empty() {
         return Ok(());
     }

@@ -20,11 +20,6 @@ export type RunnerProfiles = Record<RunnerType, RunnerProfile>;
 
 export type ApiKeyProvider = "anthropic" | "openai";
 
-export interface ApiKeys {
-  anthropic: string;
-  openai: string;
-}
-
 export type ThemeMode = "light" | "dark" | "glass" | "system";
 
 export function isGlassTheme(theme: ThemeMode): theme is "glass" {
@@ -207,7 +202,6 @@ export function normalizeSplitWidgetCanvas(canvas: unknown): SplitWidgetCanvas {
 export interface Settings {
   runner: RunnerConfig;
   runnerProfiles: RunnerProfiles;
-  apiKeys: ApiKeys;
   locale: LocaleSetting;
   theme: ThemeMode;
   ptyFontSize: number;
@@ -265,10 +259,6 @@ function resolveRunnerConfig(
 const DEFAULT_SETTINGS: Settings = {
   runner: resolveRunnerConfig("claude-code", DEFAULT_RUNNER_PROFILES),
   runnerProfiles: DEFAULT_RUNNER_PROFILES,
-  apiKeys: {
-    anthropic: "",
-    openai: "",
-  },
   locale: "system",
   theme: "light",
   ptyFontSize: 13,
@@ -291,8 +281,7 @@ interface SettingsStore {
   closeSettings: () => void;
   setTab: (tab: SettingsStore["activeTab"]) => void;
   patchRunner: (patch: Partial<RunnerConfig>) => void;
-  patchSettings: (patch: Partial<Omit<Settings, "runner" | "runnerProfiles" | "apiKeys">>) => void;
-  saveProviderApiKey: (provider: ApiKeyProvider, key: string) => Promise<void>;
+  patchSettings: (patch: Partial<Omit<Settings, "runner" | "runnerProfiles">>) => void;
   getRunnerConfigForType: (type: RunnerType) => RunnerConfig;
 }
 
@@ -335,17 +324,6 @@ export const useSettingsStore = create<SettingsStore>()(
       patchSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
 
-      saveProviderApiKey: async (provider, key) => {
-        const { invoke } = await import("@tauri-apps/api/core");
-        set((s) => ({
-          settings: {
-            ...s.settings,
-            apiKeys: { ...s.settings.apiKeys, [provider]: key },
-          },
-        }));
-        await invoke("save_api_key", { provider, key }).catch(console.error);
-      },
-
       getRunnerConfigForType: (type) => {
         const { settings } = get();
         return resolveRunnerConfig(type, settings.runnerProfiles, settings.runner);
@@ -357,10 +335,6 @@ export const useSettingsStore = create<SettingsStore>()(
       partialize: (s) => ({
         settings: {
           ...s.settings,
-          apiKeys: {
-            anthropic: "",
-            openai: "",
-          },
         },
       }),
       merge: (persisted: unknown, current) => {
@@ -397,10 +371,6 @@ export const useSettingsStore = create<SettingsStore>()(
               runnerProfiles,
               persistedSettings.runner
             ),
-            apiKeys: {
-              ...DEFAULT_SETTINGS.apiKeys,
-              ...(persistedSettings.apiKeys ?? {}),
-            },
           },
         };
       },

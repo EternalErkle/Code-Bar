@@ -58,7 +58,7 @@ function FlatProgress({ label, leftPercent, reset }: { label: string; leftPercen
   );
 }
 
-export function UsageWidgetCard() {
+export function UsageWidgetCard({ active = true }: { active?: boolean } = {}) {
   const { t } = useAppI18n();
   const sessions = useSessionStore((s) => s.sessions);
   const expandedSessionId = useSessionStore((s) => s.expandedSessionId);
@@ -106,8 +106,14 @@ export function UsageWidgetCard() {
     }
   };
 
+  // 卡片没有停靠进可见 slot 时它的 portal 容器是游离节点，不该继续每 3 分钟拉一次用量。
   useEffect(() => {
     refreshAbortRef.current = false;
+    if (!active) {
+      return () => {
+        refreshAbortRef.current = true;
+      };
+    }
     setSnapshot(null);
     setLoading(false);
     void handleRefresh();
@@ -119,7 +125,7 @@ export function UsageWidgetCard() {
       window.clearInterval(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerType]);
+  }, [runnerType, active]);
 
   return (
     <div style={{

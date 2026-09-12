@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -25,6 +26,7 @@ import { useSessionStore } from "../store/sessionStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 
 const SESSION_DETAIL_ITEM_ID = "session-detail";
+const EMPTY_DOCKED_IDS: ReadonlySet<string> = new Set<string>();
 
 function shellQuote(value: string) {
   if (!value) return "''";
@@ -111,6 +113,10 @@ type SplitDisplayItem =
 interface SplitSwapContextValue {
   detailItemId: string;
   itemsById: Map<string, SplitDisplayItem>;
+  /// 当前真正挂进某个可见 slot 的 item id。未挂载的 item portal 容器是游离节点，
+  /// 里面的终端不应该拉起真实 shell，usage 卡片也不应该继续轮询。
+  dockedItemIds: ReadonlySet<string>;
+  registerDock: (itemId: string) => () => void;
   getCardItemId: (slotId: string) => string;
   swapWithDetail: (slotId: string) => void;
   getContainer: (itemId: string) => HTMLDivElement;
@@ -171,6 +177,8 @@ function SessionDetailBody({
 
 function TerminalWidgetBody({ itemId }: { itemId: string }) {
   const { t } = useAppI18n();
+  const { dockedItemIds } = useSplitSwapContext();
+  const isDocked = dockedItemIds.has(itemId);
   const widget = useSettingsStore((s) => {
     const match = s.settings.splitWidgetCanvas.items.find((item) => item.id === itemId);
     return match?.type === "terminal" ? match : null;
@@ -229,7 +237,7 @@ function TerminalWidgetBody({ itemId }: { itemId: string }) {
               command={terminalCommand}
               args={terminalArgs}
               workdir={terminalWorkdir}
-              active={isActiveTab}
+              active={isActiveTab && isDocked}
             />
           </div>
         );
@@ -247,7 +255,7 @@ function SplitSwapItemPortal({
   sessionDetailEmptyState?: ReactNode;
   detailSessionId?: string | null;
 }) {
-  const { getContainer } = useSplitSwapContext();
+  const { getContainer, dockedItemIds } = useSplitSwapContext();
   const container = getContainer(item.id);
 
   if (item.kind === "session-detail") {
@@ -262,7 +270,7 @@ function SplitSwapItemPortal({
     return createPortal(<TerminalWidgetBody itemId={item.id} />, container, item.id);
   }
 
-  return createPortal(<UsageWidgetCard />, container, item.id);
+  return createPortal(<UsageWidgetCard active={dockedItemIds.has(item.id)} />, container, item.id);
 }
 
 export function SplitSwapProvider({
@@ -280,6 +288,36 @@ export function SplitSwapProvider({
   const expandedSessionId = useSessionStore((s) => s.expandedSessionId);
   const widgetItems = useSettingsStore((s) => s.settings.splitWidgetCanvas.items);
   const containerMapRef = useRef(new Map<string, HTMLDivElement>());
+  const dockCountsRef = useRef(new Map<string, number>());
+  const [dockedItemIds, setDockedItemIds] = useState<ReadonlySet<string>>(EMPTY_DOCKED_IDS);
+
+  // SplitDockOutlet 挂载/卸载时登记，portal 容器因此知道自己是否真的在文档里。
+  // 用计数是因为切换 slot 时 React 可能先挂新的再卸旧的。
+  const registerDock = useCallback((itemId: string) => {
+    const counts = dockCountsRef.current;
+    counts.set(itemId, (counts.get(itemId) ?? 0) + 1);
+    setDockedItemIds((current) => {
+      if (current.has(itemId)) return current;
+      const next = new Set(current);
+      next.add(itemId);
+      return next;
+    });
+
+    return () => {
+      const remaining = (counts.get(itemId) ?? 1) - 1;
+      if (remaining > 0) {
+        counts.set(itemId, remaining);
+        return;
+      }
+      counts.delete(itemId);
+      setDockedItemIds((current) => {
+        if (!current.has(itemId)) return current;
+        const next = new Set(current);
+        next.delete(itemId);
+        return next;
+      });
+    };
+  }, []);
 
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const expandedSession = useMemo(
@@ -355,10 +393,12 @@ export function SplitSwapProvider({
   const value = useMemo<SplitSwapContextValue>(() => ({
     detailItemId: splitDetailItemId,
     itemsById,
+    dockedItemIds,
+    registerDock,
     getCardItemId,
     swapWithDetail: swapSplitDetailWithCard,
     getContainer,
-  }), [getCardItemId, getContainer, itemsById, splitDetailItemId, swapSplitDetailWithCard]);
+  }), [dockedItemIds, getCardItemId, getContainer, itemsById, registerDock, splitDetailItemId, swapSplitDetailWithCard]);
 
   return (
     <SplitSwapContext.Provider value={value}>
@@ -376,7 +416,7 @@ export function SplitSwapProvider({
 }
 
 export function SplitDockOutlet({ itemId }: { itemId: string }) {
-  const { getContainer } = useSplitSwapContext();
+  const { getContainer, registerDock } = useSplitSwapContext();
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
@@ -384,12 +424,14 @@ export function SplitDockOutlet({ itemId }: { itemId: string }) {
     if (!host) return;
     const container = getContainer(itemId);
     host.appendChild(container);
+    const unregisterDock = registerDock(itemId);
     return () => {
+      unregisterDock();
       if (container.parentElement === host) {
         host.removeChild(container);
       }
     };
-  }, [getContainer, itemId]);
+  }, [getContainer, registerDock, itemId]);
 
   return <div ref={hostRef} style={{ width: "100%", height: "100%", minHeight: 0 }} />;
 }

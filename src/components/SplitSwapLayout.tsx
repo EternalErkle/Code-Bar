@@ -438,7 +438,8 @@ export function SplitDockOutlet({ itemId }: { itemId: string }) {
 
 export function SplitStaticTerminalTabs({ itemId }: { itemId: string }) {
   const { t } = useAppI18n();
-  const { patchSettings, settings } = useSettingsStore();
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
+  const splitWidgetCanvas = useSettingsStore((s) => s.settings.splitWidgetCanvas);
   const widget = useSettingsStore((s) => {
     const match = s.settings.splitWidgetCanvas.items.find((item) => item.id === itemId);
     return match?.type === "terminal" ? match : null;
@@ -449,8 +450,8 @@ export function SplitStaticTerminalTabs({ itemId }: { itemId: string }) {
   const updateTerminalWidget = (updater: (current: SplitWidgetTerminalItem) => SplitWidgetTerminalItem) => {
     patchSettings({
       splitWidgetCanvas: {
-        ...settings.splitWidgetCanvas,
-        items: settings.splitWidgetCanvas.items.map((item) => (
+        ...splitWidgetCanvas,
+        items: splitWidgetCanvas.items.map((item) => (
           item.id === itemId && item.type === "terminal"
             ? updater(item)
             : item

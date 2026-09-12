@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { motion } from "framer-motion";
 import { useAppI18n } from "../i18n";
 import { useSessionStore } from "../store/sessionStore";
@@ -437,7 +438,11 @@ export function SessionDetail({
   showPanelHeader?: boolean;
 }) {
   const { t } = useAppI18n();
-  const { expandedSessionId, setExpandedSession, sessions } = useSessionStore();
+  // 只订阅需要的字段：订阅整个 store 会让每次 git diff 刷新、状态翻转
+  // 都重渲染这里，进而重渲染所有已挂载的 SessionPanel。
+  const expandedSessionId = useSessionStore((s) => s.expandedSessionId);
+  const setExpandedSession = useSessionStore((s) => s.setExpandedSession);
+  const sessionIds = useSessionStore(useShallow((s) => s.sessions.map((item) => item.id)));
   const visibleSessionId = openSessionId === undefined ? expandedSessionId : openSessionId;
 
   const [mountedIds, setMountedIds] = useState<string[]>([]);
@@ -450,9 +455,9 @@ export function SessionDetail({
   }, [visibleSessionId]);
 
   useEffect(() => {
-    const sessionIds = new Set(sessions.map((s) => s.id));
-    setMountedIds((prev) => prev.filter((id) => sessionIds.has(id)));
-  }, [sessions]);
+    const liveSessionIds = new Set(sessionIds);
+    setMountedIds((prev) => prev.filter((id) => liveSessionIds.has(id)));
+  }, [sessionIds]);
 
   useEffect(() => {
     if (mode !== "overlay" || !visibleSessionId) return;

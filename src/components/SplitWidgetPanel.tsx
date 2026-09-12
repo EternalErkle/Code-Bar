@@ -620,7 +620,8 @@ function TerminalTabChip({
 
 export function SplitWidgetPanel() {
   const { t } = useAppI18n();
-  const { settings, patchSettings } = useSettingsStore();
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
+  const splitWidgetCanvas = useSettingsStore((s) => s.settings.splitWidgetCanvas);
   const isGlass = useSettingsStore((s) => isGlassTheme(s.settings.theme));
   const activeWorkspace = useWorkspaceStore((s) => s.workspaces.find((workspace) => workspace.id === s.activeWorkspaceId) ?? null);
   const workspaceAccent = activeWorkspace ? getWorkspaceColor(activeWorkspace.color) : "var(--ci-accent)";
@@ -632,9 +633,9 @@ export function SplitWidgetPanel() {
   const [detachedPreviewRect, setDetachedPreviewRect] = useState<SplitWidgetTerminalItem | null>(null);
   const { itemsById, getCardItemId, swapWithDetail } = useSplitSwapSnapshot();
 
-  const widgets = settings.splitWidgetCanvas.items.filter((item) => item.visible !== false);
-  const hasHiddenWidgets = settings.splitWidgetCanvas.items.length > 0 && widgets.length === 0;
-  const gridUnit = settings.splitWidgetCanvas.cellSize;
+  const widgets = splitWidgetCanvas.items.filter((item) => item.visible !== false);
+  const hasHiddenWidgets = splitWidgetCanvas.items.length > 0 && widgets.length === 0;
+  const gridUnit = splitWidgetCanvas.cellSize;
   const maxCols = Math.max(12, Math.floor(panelBounds.width / gridUnit));
   const maxRows = Math.max(10, Math.floor(panelBounds.height / gridUnit));
   const repairedWidgets = useMemo(() => repairLayout(widgets, maxCols, maxRows), [widgets, maxCols, maxRows]);
@@ -643,25 +644,25 @@ export function SplitWidgetPanel() {
   const patchCanvasItems = useCallback((items: SplitWidgetCanvasItem[], clearFilledSnapshot = false) => {
     patchSettings({
       splitWidgetCanvas: {
-        ...settings.splitWidgetCanvas,
+        ...splitWidgetCanvas,
         items: reconcileCanvasLayout(items, maxCols, maxRows),
-        filledSnapshot: clearFilledSnapshot ? null : (settings.splitWidgetCanvas.filledSnapshot ?? null),
+        filledSnapshot: clearFilledSnapshot ? null : (splitWidgetCanvas.filledSnapshot ?? null),
       },
     });
-  }, [maxCols, maxRows, patchSettings, settings.splitWidgetCanvas]);
+  }, [maxCols, maxRows, patchSettings, splitWidgetCanvas]);
 
   const updateTerminalWidget = useCallback((widgetId: string, updater: (widget: SplitWidgetTerminalItem) => SplitWidgetTerminalItem) => {
     patchSettings({
       splitWidgetCanvas: {
-        ...settings.splitWidgetCanvas,
-        items: settings.splitWidgetCanvas.items.map((item) => (
+        ...splitWidgetCanvas,
+        items: splitWidgetCanvas.items.map((item) => (
           item.id === widgetId && item.type === "terminal"
             ? updater(item)
             : item
         )),
       },
     });
-  }, [patchSettings, settings.splitWidgetCanvas]);
+  }, [patchSettings, splitWidgetCanvas]);
 
   useEffect(() => {
     const element = panelRef.current;
@@ -688,14 +689,14 @@ export function SplitWidgetPanel() {
     if (!changed) return;
     patchSettings({
       splitWidgetCanvas: {
-        ...settings.splitWidgetCanvas,
-        items: settings.splitWidgetCanvas.items.map((item) => {
+        ...splitWidgetCanvas,
+        items: splitWidgetCanvas.items.map((item) => {
           const repaired = repairedWidgets.find((candidate) => candidate.id === item.id);
           return repaired ?? item;
         }),
       },
     });
-  }, [panelBounds.height, panelBounds.width, patchSettings, repairedWidgets, settings.splitWidgetCanvas, widgets]);
+  }, [panelBounds.height, panelBounds.width, patchSettings, repairedWidgets, splitWidgetCanvas, widgets]);
 
   return (
     <div ref={panelRef} style={{
@@ -736,12 +737,12 @@ export function SplitWidgetPanel() {
               const repaired = repairLayout(expanded, maxCols, maxRows).map((item) => insetRect(item, maxCols, maxRows));
               patchSettings({
                 splitWidgetCanvas: {
-                  ...settings.splitWidgetCanvas,
-                  items: settings.splitWidgetCanvas.items.map((item) => {
+                  ...splitWidgetCanvas,
+                  items: splitWidgetCanvas.items.map((item) => {
                     const match = repaired.find((candidate) => candidate.id === item.id);
                     return match ?? item;
                   }),
-                  filledSnapshot: settings.splitWidgetCanvas.items,
+                  filledSnapshot: splitWidgetCanvas.items,
                 },
               });
             }}
@@ -801,7 +802,7 @@ export function SplitWidgetPanel() {
             const dragData = readDragData(active.data.current);
             setActiveDragType(dragData?.type ?? null);
             if (dragData?.type === "terminal-tab") {
-              const widget = settings.splitWidgetCanvas.items.find(
+              const widget = splitWidgetCanvas.items.find(
                 (item): item is SplitWidgetTerminalItem => item.type === "terminal" && item.id === dragData.widgetId
               );
               const tab = widget?.tabs.find((item) => item.id === dragData.tabId);
@@ -865,7 +866,7 @@ export function SplitWidgetPanel() {
             }
 
             setDetachedPreviewRect(getDetachedTabState(
-              settings.splitWidgetCanvas.items,
+              splitWidgetCanvas.items,
               repairedWidgetMap,
               dragData.widgetId,
               dragData.tabId,
@@ -916,12 +917,12 @@ export function SplitWidgetPanel() {
 
               if (hoveredTerminal) {
                 const nextItems = moveTerminalTabToWidget(
-                  settings.splitWidgetCanvas.items,
+                  splitWidgetCanvas.items,
                   dragData.widgetId,
                   hoveredTerminal.id,
                   dragData.tabId
                 );
-                if (nextItems !== settings.splitWidgetCanvas.items) {
+                if (nextItems !== splitWidgetCanvas.items) {
                   patchCanvasItems(nextItems, true);
                 }
                 return;
@@ -932,7 +933,7 @@ export function SplitWidgetPanel() {
               if (Math.abs(delta.x) < gridUnit && Math.abs(delta.y) < gridUnit) return;
 
               const detachedState = getDetachedTabState(
-                settings.splitWidgetCanvas.items,
+                splitWidgetCanvas.items,
                 repairedWidgetMap,
                 dragData.widgetId,
                 dragData.tabId,
@@ -954,8 +955,8 @@ export function SplitWidgetPanel() {
             }
 
             if (dragData.type === "terminal-card" && dropData && dropData.widgetId !== dragData.widgetId) {
-              const nextItems = mergeTerminalWidgets(settings.splitWidgetCanvas.items, dragData.widgetId, dropData.widgetId);
-              if (nextItems !== settings.splitWidgetCanvas.items) {
+              const nextItems = mergeTerminalWidgets(splitWidgetCanvas.items, dragData.widgetId, dropData.widgetId);
+              if (nextItems !== splitWidgetCanvas.items) {
                 patchCanvasItems(nextItems, true);
               }
               return;
@@ -975,8 +976,8 @@ export function SplitWidgetPanel() {
               : candidate;
             patchSettings({
               splitWidgetCanvas: {
-                ...settings.splitWidgetCanvas,
-                items: settings.splitWidgetCanvas.items.map((item) =>
+                ...splitWidgetCanvas,
+                items: splitWidgetCanvas.items.map((item) =>
                   item.id === dragData.widgetId
                     ? { ...item, col: resolved.col, row: resolved.row, colSpan: resolved.colSpan, rowSpan: resolved.rowSpan }
                     : item
@@ -1209,8 +1210,8 @@ export function SplitWidgetPanel() {
                   }
                   patchSettings({
                     splitWidgetCanvas: {
-                      ...settings.splitWidgetCanvas,
-                      items: settings.splitWidgetCanvas.items.map((item) =>
+                      ...splitWidgetCanvas,
+                      items: splitWidgetCanvas.items.map((item) =>
                         item.id === widget.id
                           ? { ...item, col: resolved.col, row: resolved.row, colSpan: resolved.colSpan, rowSpan: resolved.rowSpan }
                           : item

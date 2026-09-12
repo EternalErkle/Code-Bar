@@ -467,8 +467,11 @@ function WorkspaceStackCollapsed({
 // ── 主组件：WorkspaceStack ────────────────────────────────────
 export function WorkspaceStack() {
   const { t } = useAppI18n();
-  const { workspaces, activeWorkspaceId, bringToFront, removeWorkspace } = useWorkspaceStore();
-  const { removeSessionsByWorkspace } = useSessionStore();
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const bringToFront = useWorkspaceStore((s) => s.bringToFront);
+  const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
+  const removeSessionsByWorkspace = useSessionStore((s) => s.removeSessionsByWorkspace);
   const sorted = useWorkspacesSorted();
 
   const [expanded, setExpanded] = useState(false);

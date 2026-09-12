@@ -691,8 +691,16 @@ pub fn resize_popup(app: tauri::AppHandle, window: tauri::WebviewWindow, height:
 }
 
 /// 调用平台原生文件夹选择对话框
+///
+/// 同步命令会在主线程执行并冻结窗口，因此改为异步并放到阻塞线程池。
 #[tauri::command]
-pub fn pick_folder() -> String {
+pub async fn pick_folder() -> String {
+    tauri::async_runtime::spawn_blocking(pick_folder_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+fn pick_folder_blocking() -> String {
     #[cfg(target_os = "macos")]
     {
         let script = r#"
@@ -721,7 +729,15 @@ Add-Type -AssemblyName System.Windows.Forms
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = "选择工作目录"
 $dialog.ShowNewFolderButton = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.Show()
+$result = $dialog.ShowDialog($owner)
+$owner.Close()
+$owner.Dispose()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
   [Console]::Write($dialog.SelectedPath)
 }
 "#;

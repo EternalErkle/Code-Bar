@@ -37,3 +37,15 @@ notify = "6.1.1"
 objc = "0.2"
 cocoa = "0.26"
 mac-notification-sys = "0.6"
+
+# 发布构建优化：LTO + 单 codegen unit 让编译器做跨 crate 内联，strip 去掉符号表。
+# 代价是编译变慢，换取更小的二进制和更快的运行时。
+#
+# 刻意不设置 panic = "abort"：PTY 命令跑在主线程上，
+# 保留栈展开才能让单次 panic 不直接终结整个进程。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+incremental = false

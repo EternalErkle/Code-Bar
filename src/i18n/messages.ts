@@ -190,6 +190,8 @@ const messages = {
     },
     session: {
       defaultName: "会话 {{id}}",
+      newNameLabel: "名称",
+      newNamePlaceholder: "例如 登录修复",
       listTitle: "会话",
       createNew: "新建",
       emptyList: "点击「+ 新建」开始新会话",
@@ -535,6 +537,8 @@ const messages = {
     },
     session: {
       defaultName: "Session {{id}}",
+      newNameLabel: "Name",
+      newNamePlaceholder: "e.g. login fix",
       listTitle: "Sessions",
       createNew: "New",
       emptyList: "Click '+ New' to start a session",
@@ -880,6 +884,8 @@ const messages = {
     },
     session: {
       defaultName: "الجلسة {{id}}",
+      newNameLabel: "الاسم",
+      newNamePlaceholder: "مثال: إصلاح تسجيل الدخول",
       listTitle: "الجلسات",
       createNew: "جديد",
       emptyList: "انقر على '+ جديد' لبدء جلسة",

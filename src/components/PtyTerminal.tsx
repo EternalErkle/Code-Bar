@@ -181,6 +181,7 @@ export function PtyTerminal({
   // 隐藏的标签页过去照样解析并重绘每一个字节。
   const pendingWriteRef = useRef<Uint8Array[]>([]);
   const pendingBytesRef = useRef(0);
+  const webglRef = useRef<WebglAddon | null>(null);
   const [exited, setExited] = useState(false);
 
   // 读取当前主题
@@ -212,15 +213,9 @@ export function PtyTerminal({
     term.loadAddon(fit);
     term.open(container);
 
-    // WebGL 渲染器：默认的 DOM 渲染在 CLI 满屏重绘时是渲染进程里最大的一笔开销。
-    // GPU 上下文丢失（驱动更新、GPU 进程重启）时回退到 DOM 渲染，避免终端变黑。
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // 没有可用 GPU 时继续使用 DOM 渲染
-    }
+    // WebGL 渲染器不在这里加载：每个实例会占一个 GPU 上下文，
+    // 而浏览器上限约 16 个，SplitSwapLayout 又会让所有标签页常驻挂载。
+    // 改为首次变为可见时再加载（见下方 active effect）。
 
     fit.fit();
 
@@ -283,6 +278,8 @@ export function PtyTerminal({
 
     return () => {
       container.removeEventListener("wheel", wheelHandler);
+      // term.dispose() 会连带释放 addon，这里只清掉引用
+      webglRef.current = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -561,10 +558,35 @@ export function PtyTerminal({
 
   // ── 可见时 fit + focus（重新展开时恢复焦点，不重启 PTY）──
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // 光标闪烁是一个常驻定时器，会让不可见的终端持续触发重绘
+      const hidden = termRef.current;
+      if (hidden) hidden.options.cursorBlink = false;
+      return;
+    }
+
+    const term = termRef.current;
+    if (term) {
+      term.options.cursorBlink = true;
+
+      // 首次可见时才创建 GPU 上下文。浏览器的 WebGL 上下文上限约 16 个，
+      // 超出后最早的会被强制丢弃，终端会变黑。
+      if (!webglRef.current) {
+        try {
+          const webgl = new WebglAddon();
+          webgl.onContextLoss(() => {
+            webgl.dispose();
+            webglRef.current = null;
+          });
+          term.loadAddon(webgl);
+          webglRef.current = webgl;
+        } catch {
+          // 没有可用 GPU：继续使用 DOM 渲染
+        }
+      }
+    }
 
     // 回放隐藏期间缓冲的输出
-    const term = termRef.current;
     if (term && pendingWriteRef.current.length > 0) {
       const pending = pendingWriteRef.current;
       pendingWriteRef.current = [];

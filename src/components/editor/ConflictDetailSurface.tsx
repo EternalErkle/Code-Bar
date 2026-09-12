@@ -2,7 +2,7 @@ import { GitMerge, Check } from "lucide-react";
 import { useAppI18n } from "../../i18n";
 import { resolveConflict } from "../../services/scmCommands";
 import { useScmStore } from "../../store/scmStore";
-import { CodeEditorSurface } from "./CodeEditorSurface";
+import { CodeEditorSurface } from "./CodeEditorSurfaceLazy";
 import { WorkbenchTooltip } from "../ui/WorkbenchTooltip";
 
 export function ConflictDetailSurface({

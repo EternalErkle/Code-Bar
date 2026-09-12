@@ -128,7 +128,7 @@ fn is_binary(bytes: &[u8]) -> bool {
 }
 
 #[tauri::command]
-pub fn remember_session_workdir(
+pub async fn remember_session_workdir(
     app: tauri::AppHandle,
     session_id: String,
     workdir: String,
@@ -152,7 +152,7 @@ pub fn remember_session_workdir(
 }
 
 #[tauri::command]
-pub fn remove_session_workdir(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+pub async fn remove_session_workdir(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let sanitized = session_id.trim();
     if sanitized.is_empty() {
         return Ok(());
@@ -171,7 +171,7 @@ pub fn remove_session_workdir(app: tauri::AppHandle, session_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn read_session_file(
+pub async fn read_session_file(
     app: tauri::AppHandle,
     session_id: String,
     relative_path: String,
@@ -206,7 +206,7 @@ pub fn read_session_file(
 }
 
 #[tauri::command]
-pub fn write_session_file(
+pub async fn write_session_file(
     app: tauri::AppHandle,
     session_id: String,
     relative_path: String,
@@ -242,7 +242,7 @@ pub fn write_session_file(
 }
 
 #[tauri::command]
-pub fn list_session_directory(
+pub async fn list_session_directory(
     app: tauri::AppHandle,
     session_id: String,
     relative_path: String,

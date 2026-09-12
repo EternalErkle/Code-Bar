@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 function hashString(input) {
@@ -56,12 +58,22 @@ async function findAvailablePortPair(startPort) {
   throw new Error(`Unable to find a free dev/HMR port pair starting from ${startPort}`);
 }
 
+function quoteForCmd(arg) {
+  if (arg === "") return '""';
+  if (!/[\s"^&|<>()%!]/.test(arg)) return arg;
+  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+}
+
 function spawnPnpm(args, env) {
-  const child = spawn(process.platform === "win32" ? "pnpm.cmd" : "pnpm", args, {
-    cwd: process.cwd(),
-    env,
-    stdio: "inherit",
-  });
+  // Node refuses to spawn .cmd shims without a shell (CVE-2024-27980 hardening),
+  // which fails as EINVAL on Windows. Go through cmd.exe and quote args here.
+  const isWindows = process.platform === "win32";
+  const options = { cwd: process.cwd(), env, stdio: "inherit" };
+  // Pass one pre-quoted command string rather than an args array, which would
+  // trigger DEP0190 on every run.
+  const child = isWindows
+    ? spawn(["pnpm.cmd", ...args.map(quoteForCmd)].join(" "), { ...options, shell: true })
+    : spawn("pnpm", args, options);
 
   child.on("exit", (code, signal) => {
     if (signal) {
@@ -140,12 +152,17 @@ if (command !== "dev") {
   console.log(`[worktree-dev] hmrPort=${hmrPort}`);
   console.log(`[worktree-dev] identifier=${overrideConfig.identifier}`);
 
+  // Write the override config to a file rather than passing inline JSON: on
+  // Windows the args travel through cmd.exe, which mangles embedded quotes.
+  const overrideConfigPath = path.join(os.tmpdir(), `code-bar-dev-${cwdHash.toString(36)}.json`);
+  fs.writeFileSync(overrideConfigPath, JSON.stringify(overrideConfig), "utf8");
+
   const tauriArgs = [
     "exec",
     "tauri",
     "dev",
     "--config",
-    JSON.stringify(overrideConfig),
+    overrideConfigPath,
     ...inputArgs.slice(command === "dev" ? 1 : 0),
   ];
 

@@ -131,84 +131,6 @@ pub fn get_file_hunks_between(
     (vec![], parse_diff_note(&diff_text))
 }
 
-// ── 批量 diff 解析 ────────────────────────────────────────────────
-
-/// 从单个 `diff --git` 段落中解析出文件路径（优先 b 侧，删除时回退 a 侧）
-fn section_path(section: &str) -> Option<String> {
-    let mut from_path: Option<String> = None;
-    for line in section.lines() {
-        if let Some(rest) = line.strip_prefix("+++ ") {
-            if rest != "/dev/null" {
-                return Some(rest.strip_prefix("b/").unwrap_or(rest).to_string());
-            }
-        } else if let Some(rest) = line.strip_prefix("--- ") {
-            if rest != "/dev/null" && from_path.is_none() {
-                from_path = Some(rest.strip_prefix("a/").unwrap_or(rest).to_string());
-            }
-        } else if line.starts_with("@@") {
-            break;
-        }
-    }
-    from_path
-}
-
-/// 一次性解析整个仓库的 diff 输出，得到 path → (hunks, note) 映射。
-///
-/// 取代「每个变更文件 spawn 一次 `git diff -- <path>`」的做法：
-/// 大改动下那会在每次刷新时创建上百个进程，在 Windows 上尤其昂贵。
-fn parse_multi_file_diff(
-    diff_text: &str,
-) -> std::collections::HashMap<String, (Vec<serde_json::Value>, Option<String>)> {
-    let mut map = std::collections::HashMap::new();
-    let mut start: Option<usize> = None;
-    let mut offsets: Vec<usize> = vec![];
-
-    for (index, _) in diff_text.match_indices("\ndiff --git ") {
-        offsets.push(index + 1);
-    }
-    if diff_text.starts_with("diff --git ") {
-        start = Some(0);
-    }
-
-    let mut bounds: Vec<usize> = start.into_iter().collect();
-    bounds.extend(offsets);
-    bounds.push(diff_text.len());
-
-    for window in bounds.windows(2) {
-        let section = &diff_text[window[0]..window[1]];
-        let Some(path) = section_path(section) else {
-            continue;
-        };
-        let hunks = parse_diff_hunks(section);
-        let note = if hunks.is_empty() {
-            parse_diff_note(section)
-        } else {
-            None
-        };
-        map.insert(path, (hunks, note));
-    }
-
-    map
-}
-
-/// 运行一次完整 diff 并解析为 path → (hunks, note) 映射；失败时返回空表（调用方回退到逐文件）
-fn collect_diff_map(
-    workdir: &str,
-    args: &[&str],
-) -> std::collections::HashMap<String, (Vec<serde_json::Value>, Option<String>)> {
-    let output = background_command("git")
-        .current_dir(workdir)
-        .args(args)
-        .output();
-    let Ok(out) = output else {
-        return std::collections::HashMap::new();
-    };
-    if !out.status.success() {
-        return std::collections::HashMap::new();
-    }
-    parse_multi_file_diff(&String::from_utf8_lossy(&out.stdout))
-}
-
 // ── 文件列表解析 ──────────────────────────────────────────────────
 
 /// 根据 additions/deletions 判断文件变更类型
@@ -281,14 +203,10 @@ pub fn get_git_diff_raw(workdir: &str) -> Result<Vec<serde_json::Value>, String>
         .output()
         .map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let diff_map = collect_diff_map(workdir, &["diff", "HEAD"]);
-    Ok(parse_numstat(&stdout, workdir, |path| {
-        match diff_map.get(path) {
-            Some(entry) => entry.clone(),
-            // 批量解析未覆盖（例如含特殊字符的重命名路径）时才回退到单文件 spawn
-            None => get_file_hunks(workdir, path),
-        }
-    }))
+    // 不再附带 hunks：列表只需要摘要，内容由 get_file_diff_hunks 按需拉取。
+    // 之前每次刷新都要跑一次完整 diff 并把每一行序列化过来，
+    // 大改动下是几 MB 的 IPC 负载，而界面默认只显示文件名。
+    Ok(parse_numstat(&stdout, workdir, |_| (vec![], None)))
 }
 
 /// 计算 base_branch...session_branch 之间的变更文件
@@ -309,14 +227,8 @@ pub fn get_git_diff_between(
     }
 
     let stdout = String::from_utf8_lossy(&numstat.stdout);
-    let range_clone = range.clone();
-    let diff_map = collect_diff_map(workdir, &["diff", range.as_str()]);
-    Ok(parse_numstat(&stdout, workdir, move |path| {
-        match diff_map.get(path) {
-            Some(entry) => entry.clone(),
-            None => get_file_hunks_between(workdir, &range_clone, path),
-        }
-    }))
+    // 同上：只回传文件摘要，hunks 由 get_file_diff_hunks 按需拉取
+    Ok(parse_numstat(&stdout, workdir, |_| (vec![], None)))
 }
 
 pub fn get_git_diff_from_base_worktree(
@@ -349,26 +261,46 @@ pub fn get_git_diff_from_base_worktree(
     }
 
     let stdout = String::from_utf8_lossy(&numstat.stdout);
-    let base_clone = merge_base_sha.clone();
-    let diff_map = collect_diff_map(workdir, &["diff", merge_base_sha.as_str()]);
-    Ok(parse_numstat(&stdout, workdir, move |path| {
-        if let Some(entry) = diff_map.get(path) {
-            return entry.clone();
-        }
-        let output = background_command("git")
-            .current_dir(workdir)
-            .args(["diff", &base_clone, "--", path])
-            .output();
-        let Ok(out) = output else {
-            return (vec![], None);
+    // 同上：只回传文件摘要，hunks 由 get_file_diff_hunks 按需拉取
+    Ok(parse_numstat(&stdout, workdir, |_| (vec![], None)))
+}
+
+/// 按需获取单个文件的 hunks。
+///
+/// 列表刷新只回传文件摘要；某个文件被展开时才拉取它的 hunks。
+/// 之前每次刷新都把所有文件的所有 hunk 一起序列化，大改动下是几 MB 的
+/// IPC 负载，而界面默认只显示文件名。
+#[tauri::command]
+pub async fn get_file_diff_hunks(
+    workdir: String,
+    path: String,
+    base_branch: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let expanded = expand_path(&workdir);
+    tokio::task::spawn_blocking(move || {
+        let (hunks, note) = match base_branch.as_deref().map(str::trim) {
+            Some(base) if !base.is_empty() => {
+                let merge_base = background_command("git")
+                    .current_dir(&expanded)
+                    .args(["merge-base", "HEAD", base])
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                let sha = String::from_utf8_lossy(&merge_base.stdout).trim().to_string();
+                if merge_base.status.success() && !sha.is_empty() {
+                    get_file_hunks_between(&expanded, &sha, &path)
+                } else {
+                    get_file_hunks(&expanded, &path)
+                }
+            }
+            _ => get_file_hunks(&expanded, &path),
         };
-        let diff_text = String::from_utf8_lossy(&out.stdout);
-        let hunks = parse_diff_hunks(&diff_text);
-        if !hunks.is_empty() {
-            return (hunks, None);
-        }
-        (vec![], parse_diff_note(&diff_text))
-    }))
+        Ok::<serde_json::Value, String>(serde_json::json!({
+            "hunks": hunks,
+            "note": note,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Tauri Commands ────────────────────────────────────────────────

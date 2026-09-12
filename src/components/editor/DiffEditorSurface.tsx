@@ -54,6 +54,7 @@ export function DiffEditorSurface({
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <DiffViewer
           files={[file]}
+          sessionId={sessionId}
           fileMode={fileMode}
           busy={busy}
           contentMaxHeight="none"

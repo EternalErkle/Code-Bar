@@ -5,7 +5,7 @@ import { useEditorBufferStore, type EditorBufferState } from "../../store/editor
 import { useEditorStore } from "../../store/editorStore";
 import { useScmStore } from "../../store/scmStore";
 import { type ClaudeSession, type DiffFile } from "../../store/sessionStore";
-import { CodeEditorSurface } from "./CodeEditorSurface";
+import { CodeEditorSurface } from "./CodeEditorSurfaceLazy";
 import { ConflictDetailSurface } from "./ConflictDetailSurface";
 import { DiffEditorSurface } from "./DiffEditorSurface";
 

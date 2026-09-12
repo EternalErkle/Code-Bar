@@ -631,11 +631,20 @@ fn extract_codex_first_task(json: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// 最多解析多少个 Codex 会话文件。
+///
+/// 这个目录只增不减，全量解析的耗时随历史长度线性增长，
+/// 而会话恢复只关心最近的那些。
+const MAX_CODEX_HISTORY_FILES: usize = 400;
+
 fn load_codex_history_index() -> HashMap<String, RecoveryHint> {
     let Some(sessions_dir) = home_dir().map(|home| home.join(".codex").join("sessions")) else {
         return HashMap::new();
     };
-    let mut hints = HashMap::new();
+
+    // 第一遍只收集路径和修改时间，不打开任何文件；
+    // 按时间倒序截断之后才去解析内容。
+    let mut candidates: Vec<(u64, PathBuf)> = Vec::new();
     let mut stack = vec![sessions_dir];
 
     while let Some(dir) = stack.pop() {
@@ -652,7 +661,16 @@ fn load_codex_history_index() -> HashMap<String, RecoveryHint> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
+            candidates.push((modified_millis(&path), path));
+        }
+    }
 
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.truncate(MAX_CODEX_HISTORY_FILES);
+
+    let mut hints = HashMap::new();
+    for (_, path) in candidates {
+        {
             let Ok(handle) = fs::File::open(&path) else {
                 continue;
             };
@@ -860,7 +878,7 @@ fn collect_known_session_id_floor(
 }
 
 #[tauri::command]
-pub fn reserve_session_id(
+pub async fn reserve_session_id(
     app: tauri::AppHandle,
     workspaces: Vec<RecoverWorkspaceInput>,
     existing_session_ids: Vec<String>,
@@ -885,7 +903,7 @@ pub fn reserve_session_id(
 }
 
 #[tauri::command]
-pub fn load_ui_states(
+pub async fn load_ui_states(
     app: tauri::AppHandle,
     keys: Vec<String>,
 ) -> Result<HashMap<String, Option<String>>, String> {
@@ -897,12 +915,12 @@ pub fn load_ui_states(
 }
 
 #[tauri::command]
-pub fn save_ui_state(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+pub async fn save_ui_state(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
     write_ui_state(&app, &key, &value)
 }
 
 #[tauri::command]
-pub fn remove_ui_state(app: tauri::AppHandle, key: String) -> Result<(), String> {
+pub async fn remove_ui_state(app: tauri::AppHandle, key: String) -> Result<(), String> {
     remove_ui_state_file(&app, &key)
 }
 
@@ -935,12 +953,12 @@ pub struct BackfilledSessionBinding {
 }
 
 #[tauri::command]
-pub fn load_deleted_ui_state(app: tauri::AppHandle) -> Result<DeletedUiState, String> {
+pub async fn load_deleted_ui_state(app: tauri::AppHandle) -> Result<DeletedUiState, String> {
     read_deleted_ui_state(&app)
 }
 
 #[tauri::command]
-pub fn save_recovery_binding(
+pub async fn save_recovery_binding(
     app: tauri::AppHandle,
     input: SaveRecoveryBindingInput,
 ) -> Result<(), String> {
@@ -957,7 +975,7 @@ pub fn save_recovery_binding(
 }
 
 #[tauri::command]
-pub fn backfill_workspace_session_bindings(
+pub async fn backfill_workspace_session_bindings(
     app: tauri::AppHandle,
     sessions: Vec<BackfillSessionBindingInput>,
 ) -> Result<Vec<BackfilledSessionBinding>, String> {
@@ -990,7 +1008,7 @@ pub fn backfill_workspace_session_bindings(
 }
 
 #[tauri::command]
-pub fn mark_deleted_items(
+pub async fn mark_deleted_items(
     app: tauri::AppHandle,
     session_ids: Vec<String>,
     workspace_ids: Vec<String>,
@@ -1041,7 +1059,7 @@ pub fn mark_deleted_items(
 }
 
 #[tauri::command]
-pub fn clear_deleted_items(
+pub async fn clear_deleted_items(
     app: tauri::AppHandle,
     session_ids: Vec<String>,
     workspace_ids: Vec<String>,
@@ -1107,7 +1125,7 @@ pub struct RecoverWorkspaceInput {
 }
 
 #[tauri::command]
-pub fn recover_workspace_sessions(
+pub async fn recover_workspace_sessions(
     app: tauri::AppHandle,
     workspaces: Vec<RecoverWorkspaceInput>,
     existing_session_ids: Vec<String>,

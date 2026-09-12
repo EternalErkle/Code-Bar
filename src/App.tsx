@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -11,7 +11,9 @@ import { SplitWidgetPanel } from "./components/SplitWidgetPanel";
 import { SplitSwapProvider } from "./components/SplitSwapLayout";
 import { WorkbenchSidebar } from "./workbench/WorkbenchSidebar";
 import { WorkbenchCenter } from "./workbench/WorkbenchCenter";
-import Settings from "./components/Settings";
+// 设置面板按需加载：它只在用户打开设置时才需要，
+// 静态引入会把它连同依赖一起塞进首屏 chunk。
+const Settings = lazy(() => import("./components/Settings"));
 import { ensureI18n, getLocaleDirection, resolveEffectiveLocale, useAppI18n } from "./i18n";
 import { useSessionStore, type DiffFile, type ClaudeSession } from "./store/sessionStore";
 import {
@@ -24,6 +26,7 @@ import { useWorkbenchStore } from "./store/workbenchStore";
 import { useScmStore } from "./store/scmStore";
 import { useExplorerStore, type ExplorerEntry } from "./store/explorerStore";
 import { useEditorStore } from "./store/editorStore";
+import { useShallow } from "zustand/react/shallow";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 28, mass: 1 };
 const MAX_FRONTEND_ERROR_LOGS = 50;
@@ -56,6 +59,9 @@ interface BackfilledSessionBinding {
 
 export default function App() {
   const { t } = useAppI18n();
+  // 只订阅用到的字段。App 是整棵树的根，整店订阅意味着
+  // sessionOrderByWorkspace、splitCardItemIdsBySlot 之类的变化
+  // 也会让整个界面重渲染。
   const {
     sessions,
     activeSessionId,
@@ -65,17 +71,29 @@ export default function App() {
     setDiffFiles,
     setActiveSession,
     setExpandedSession,
-  } = useSessionStore();
+  } = useSessionStore(
+    useShallow((s) => ({
+      sessions: s.sessions,
+      activeSessionId: s.activeSessionId,
+      expandedSessionId: s.expandedSessionId,
+      appendOutput: s.appendOutput,
+      updateSession: s.updateSession,
+      setDiffFiles: s.setDiffFiles,
+      setActiveSession: s.setActiveSession,
+      setExpandedSession: s.setExpandedSession,
+    }))
+  );
   const setScmSnapshot = useScmStore((s) => s.setSnapshot);
   const setScmStatus = useScmStore((s) => s.setStatus);
   const setScmDiffOverride = useScmStore((s) => s.setDiffOverride);
 
-  const { settings, patchSettings } = useSettingsStore();
+  const settings = useSettingsStore((s) => s.settings);
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
   const effectiveLocale = resolveEffectiveLocale(settings.locale);
   const direction = getLocaleDirection(effectiveLocale);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
-  const { activeWorkspaceId } = useWorkspaceStore();
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const sidebarSection = useWorkbenchStore((s) => s.sidebarSection);
   const focusSession = useWorkbenchStore((s) => s.focusSession);
   const focusedSessionId = useWorkbenchStore((s) => s.focusedSessionId);
@@ -1154,7 +1172,9 @@ export default function App() {
             minHeight: 0,
             flexDirection: "column",
           }}>
-            <Settings />
+            <Suspense fallback={null}>
+              <Settings />
+            </Suspense>
 
             <div
               style={{

@@ -356,19 +356,26 @@ function mergePersistedValue(
 export async function bootstrapPersistState(): Promise<void> {
   if (typeof window === "undefined" || !("localStorage" in window)) return;
 
-  if (isTauriRuntime()) {
+  // 这三件事彼此独立。串行 await 会把首屏渲染推迟三个往返，
+  // 而它们都发生在 React 挂载之前，用户只能看着空窗口等。
+  const homeDirTask = (async () => {
+    if (!isTauriRuntime()) return;
     try {
       const { homeDir } = await import("@tauri-apps/api/path");
       cachedHomeDir = (await homeDir()).replace(/[\\/]+$/, "");
     } catch {
       cachedHomeDir = "";
     }
-  }
+  })();
 
-  const fromFile = await invokeSafe<Record<string, string | null>>("load_ui_states", {
-    keys: [...PERSIST_KEYS],
-  });
-  const deletedState = (await invokeSafe<DeletedUiState>("load_deleted_ui_state", {})) ?? {};
+  const [fromFile, loadedDeletedState] = await Promise.all([
+    invokeSafe<Record<string, string | null>>("load_ui_states", {
+      keys: [...PERSIST_KEYS],
+    }),
+    invokeSafe<DeletedUiState>("load_deleted_ui_state", {}),
+    homeDirTask,
+  ]);
+  const deletedState = loadedDeletedState ?? {};
 
   for (const key of PERSIST_KEYS) {
     const fileValue = fromFile?.[key] ?? null;

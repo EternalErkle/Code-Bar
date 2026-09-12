@@ -93,6 +93,10 @@ interface ExplorerStore extends ExplorerNodeState, ExplorerDirectoryCache, Explo
   markTouchedPaths: (sessionId: string, paths: string[]) => void;
   clearTouchedPaths: (sessionId: string) => void;
   applyWatcherEvent: (sessionId: string, event: ExplorerWatcherEvent) => boolean;
+  /// 丢弃某个 session 的全部缓存。
+  /// 这些表按 session 累积目录项与节点图，之前从不回收，
+  /// 于是内存随着开过的 session 数量单调增长。
+  removeSessionData: (sessionId: string) => void;
 }
 
 function dirKey(sessionId: string, dir: string) {
@@ -731,6 +735,44 @@ export const useExplorerStore = create<ExplorerStore>()((set, get) => ({
         [sessionId]: EMPTY_DIRS,
       },
     })),
+
+  removeSessionData: (sessionId) =>
+    set((state) => {
+      const prefix = `${sessionId}:`;
+
+      const dropPrefixed = <V>(record: Record<string, V>): Record<string, V> => {
+        let changed = false;
+        const next: Record<string, V> = {};
+        for (const [key, value] of Object.entries(record)) {
+          if (key.startsWith(prefix)) {
+            changed = true;
+            continue;
+          }
+          next[key] = value;
+        }
+        // 没命中就返回原引用，避免无谓的重渲染
+        return changed ? next : record;
+      };
+
+      const dropKey = <V>(record: Record<string, V>): Record<string, V> => {
+        if (!(sessionId in record)) return record;
+        const next = { ...record };
+        delete next[sessionId];
+        return next;
+      };
+
+      return {
+        expandedDirsBySession: dropKey(state.expandedDirsBySession),
+        selectedPathBySession: dropKey(state.selectedPathBySession),
+        selectModeBySession: dropKey(state.selectModeBySession),
+        touchedPathsBySession: dropKey(state.touchedPathsBySession),
+        childrenBySessionPath: dropPrefixed(state.childrenBySessionPath),
+        loadingBySessionPath: dropPrefixed(state.loadingBySessionPath),
+        errorBySessionPath: dropPrefixed(state.errorBySessionPath),
+        nodesBySessionPath: dropPrefixed(state.nodesBySessionPath),
+        childPathsBySessionDir: dropPrefixed(state.childPathsBySessionDir),
+      };
+    }),
 
   applyWatcherEvent: (sessionId, event) => {
     if (event.eventType === "change") {

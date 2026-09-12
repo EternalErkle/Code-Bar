@@ -18,6 +18,54 @@ pub fn session_branch_name(prefix: &str, session_id: &str) -> String {
     format!("{prefix}/session-{session_id}")
 }
 
+/// Windows 保留设备名，不能直接作为目录名
+const RESERVED_DIR_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// 把用户输入的名称转成文件系统与 git ref 都安全的 slug
+pub fn worktree_slug(raw: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+
+    for ch in raw.trim().chars() {
+        if ch.is_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.extend(ch.to_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+
+    if slug.chars().count() > 48 {
+        slug = slug.chars().take(48).collect();
+    }
+
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        return None;
+    }
+    if RESERVED_DIR_NAMES.contains(&slug.as_str()) {
+        return Some(format!("{slug}-wt"));
+    }
+    Some(slug)
+}
+
+/// 选一个尚未被占用的 worktree 目录，重名时追加序号
+fn unique_worktree_path(base_dir: &str, slug: &str) -> String {
+    let mut candidate = format!("{base_dir}/{slug}");
+    let mut suffix = 2_u32;
+    while Path::new(&candidate).exists() {
+        candidate = format!("{base_dir}/{slug}-{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
 /// 从 worktree 目录的 HEAD 文件读取分支名
 pub fn read_worktree_branch(worktree_path: &Path) -> Option<String> {
     // worktree 中的 HEAD 格式：ref: refs/heads/<branch>
@@ -209,9 +257,11 @@ pub async fn git_worktree_merge(
 pub async fn setup_session_worktree(
     workdir: String,
     session_id: String,
+    name: Option<String>,
 ) -> Result<Option<serde_json::Value>, String> {
     let expanded_workdir = expand_path(&workdir);
     let session_id_clone = session_id.clone();
+    let requested_name = name.unwrap_or_default();
 
     tokio::task::spawn_blocking(move || {
         // 检测是否是 git 仓库
@@ -237,23 +287,24 @@ pub async fn setup_session_worktree(
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| expanded_workdir.clone());
-        let worktree_path = format!(
-            "{}/{}/session-{}",
-            repo_parent,
-            session_worktree_root_dir(),
-            session_id_clone
-        );
+        // 目录名来自用户输入的名称；为空或全是非法字符时回落到 session-{id}
+        let slug = worktree_slug(&requested_name)
+            .unwrap_or_else(|| format!("session-{session_id_clone}"));
+        let wt_base = format!("{}/{}", repo_parent, session_worktree_root_dir());
+        // 重名时追加序号，而不是强删已存在的目录——它可能属于别的 session
+        let worktree_path = unique_worktree_path(&wt_base, &slug);
+        let dir_name = Path::new(&worktree_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(slug.as_str())
+            .to_string();
         let branch_prefix = session_branch_prefix();
-        let branch = session_branch_name(&branch_prefix, &session_id_clone);
+        let branch = session_branch_name(&branch_prefix, &dir_name);
 
-        // 幂等：先清理同名的旧 worktree/分支
+        // 清理指向已删除目录的悬空注册项；prune 只删登记信息，不碰仍存在的 worktree
         let _ = background_command("git")
             .current_dir(&expanded_workdir)
-            .args(["worktree", "remove", "--force", &worktree_path])
-            .output();
-        let _ = background_command("git")
-            .current_dir(&expanded_workdir)
-            .args(["branch", "-D", &branch])
+            .args(["worktree", "prune"])
             .output();
 
         // 创建 worktree

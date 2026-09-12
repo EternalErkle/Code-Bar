@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppI18n } from "../i18n";
+import { NewSessionForm } from "../components/NewSessionForm";
 import { SplitDetailHost } from "../components/SplitSwapLayout";
 import { ExploreEditor } from "../components/ExploreMode";
 import { showSessionSurface, showExplorer, showScm } from "../services/workbenchCommands";
@@ -156,7 +157,10 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
     await invoke("trust_workspace", { path: trimmed }).catch(() => {});
   };
 
-  const handleNewSession = async () => {
+  const [showNewSessionForm, setShowNewSessionForm] = useState(false);
+
+  const handleNewSession = async (name: string) => {
+    setShowNewSessionForm(false);
     if (!activeWorkspace) return;
 
     let id: string;
@@ -180,7 +184,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
       id = String(maxId + 1);
     }
 
-    addSession(id, activeWorkspace.id, activeWorkspace.path, undefined, { ...runner });
+    addSession(id, activeWorkspace.id, activeWorkspace.path, name || undefined, { ...runner });
     setActiveSession(id);
     setExpandedSession(id);
     focusSession(id);
@@ -204,6 +208,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
         } | null>("setup_session_worktree", {
           workdir: activeWorkspace.path,
           sessionId: id,
+          name: name || null,
         });
         if (result) {
           await invoke("remember_session_workdir", {
@@ -270,12 +275,20 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                     />
                   </>
                 ) : (
-                  <WelcomeEntry
-                    title={t("workbench.welcome.createOrChooseSession")}
-                    detail={t("workbench.welcome.useSidebarOrCreate")}
-                    onClick={() => { void handleNewSession(); }}
-                    action={<WelcomeAction label={t("workbench.welcome.new")} accent onClick={() => { void handleNewSession(); }} />}
-                  />
+                  <>
+                    <WelcomeEntry
+                      title={t("workbench.welcome.createOrChooseSession")}
+                      detail={t("workbench.welcome.useSidebarOrCreate")}
+                      onClick={() => setShowNewSessionForm(true)}
+                      action={<WelcomeAction label={t("workbench.welcome.new")} accent onClick={() => setShowNewSessionForm(true)} />}
+                    />
+                    {showNewSessionForm && (
+                      <NewSessionForm
+                        onCreate={(name) => { void handleNewSession(name); }}
+                        onCancel={() => setShowNewSessionForm(false)}
+                      />
+                    )}
+                  </>
                 )}
               </WelcomeList>
               <WelcomeList title={t("workbench.welcome.recent")}>

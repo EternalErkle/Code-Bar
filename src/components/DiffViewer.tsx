@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileCode2, FilePlus2, FileX2, Minus, Plus } from "lucide-react";
 import { useAppI18n } from "../i18n";
-import { DiffFile, DiffLine } from "../store/sessionStore";
+import { DiffFile, DiffHunk, DiffLine, useSessionStore } from "../store/sessionStore";
 import { type ScmActionMode } from "../store/scmStore";
 import { WorkbenchTooltip } from "./ui/WorkbenchTooltip";
 
@@ -29,7 +30,10 @@ const LINE_STYLES: Record<DiffLine["type"], LineStyle> = {
   },
 };
 
-function DiffLineRow({ line }: { line: DiffLine }) {
+/// 一个大 diff 会渲染几千个这样的行。
+/// 没有 memo 时，任何一次祖先重渲染（状态翻转、diff 刷新）都会重建全部行。
+/// line 对象来自 store 且不会原地修改，因此按引用比较是安全的。
+const DiffLineRow = memo(function DiffLineRow({ line }: { line: DiffLine }) {
   const c = LINE_STYLES[line.type];
   const prefix = line.type === "added" ? "+" : line.type === "deleted" ? "−" : " ";
   return (
@@ -81,7 +85,7 @@ function DiffLineRow({ line }: { line: DiffLine }) {
       </span>
     </div>
   );
-}
+});
 
 function FileIcon({ type, binary }: { type: DiffFile["type"]; binary?: boolean }) {
   if (binary) return <FileCode2 size={12} strokeWidth={1.8} />;
@@ -127,6 +131,8 @@ function HunkActionButton({ label, icon, onClick, disabled }: { label: string; i
 
 function DiffFileRow({
   file,
+  sessionId,
+  defaultOpen = false,
   fileMode,
   onStageHunk,
   onUnstageHunk,
@@ -135,6 +141,8 @@ function DiffFileRow({
   contentMaxHeight,
 }: {
   file: DiffFile;
+  sessionId?: string;
+  defaultOpen?: boolean;
   fileMode?: ScmActionMode | null;
   onStageHunk?: (path: string, hunkIndex: number) => void;
   onUnstageHunk?: (path: string, hunkIndex: number) => void;
@@ -143,9 +151,46 @@ function DiffFileRow({
   contentMaxHeight?: number | string;
 }) {
   const { t } = useAppI18n();
-  const [isOpen, setIsOpen] = useState(true);
+  // 多文件列表默认折叠：之前每个文件都展开，一次 diff 刷新就把所有文件的
+  // 每一行都变成 DOM 节点，而且没有虚拟化。单文件视图仍然直接展开。
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [fetchedHunks, setFetchedHunks] = useState<DiffHunk[] | null>(null);
+  const [fetchedNote, setFetchedNote] = useState<string | null>(null);
   const isBinary = !!file.binary;
   const useInnerScroll = contentMaxHeight !== "none";
+
+  // 列表刷新只带回文件摘要，hunks 在首次展开时按需拉取。
+  useEffect(() => {
+    if (!isOpen || isBinary || !sessionId) return;
+    if (file.hunks.length > 0 || fetchedHunks !== null) return;
+
+    const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+
+    let cancelled = false;
+    void invoke<{ hunks: DiffHunk[] | null; note: string | null }>("get_file_diff_hunks", {
+      workdir: session.workdir,
+      path: file.path,
+      baseBranch: session.baseBranch ?? null,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setFetchedHunks(result.hunks ?? []);
+        setFetchedNote(result.note ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedHunks([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isBinary, sessionId, file.path, file.hunks.length, fetchedHunks]);
+
+  const hunks = file.hunks.length > 0 ? file.hunks : fetchedHunks ?? [];
+  const note = file.note ?? fetchedNote;
+  const loadingHunks =
+    isOpen && !isBinary && !!sessionId && file.hunks.length === 0 && fetchedHunks === null;
 
   return (
     <div style={{ borderBottom: "1px solid var(--ci-toolbar-border)", background: "transparent" }}>
@@ -186,12 +231,16 @@ function DiffFileRow({
             <div style={{ padding: "14px 16px", fontSize: 11, color: "var(--ci-text-dim)" }}>
               {t("diff.binaryPreviewUnsupported")}
             </div>
-          ) : file.hunks.length === 0 ? (
+          ) : loadingHunks ? (
+            <div style={{ padding: "12px 16px", fontSize: 11, color: "var(--ci-text-dim)", fontFamily: MONO }}>
+              …
+            </div>
+          ) : hunks.length === 0 ? (
             <div style={{ padding: "12px 16px", fontSize: 11, color: "var(--ci-text-muted)", fontFamily: MONO }}>
-              {file.note ?? t("diff.noContentDiff")}
+              {note ?? t("diff.noContentDiff")}
             </div>
           ) : (
-            file.hunks.map((hunk, hi) => (
+            hunks.map((hunk, hi) => (
               <div key={hi}>
                 <div style={{
                   padding: "2px 8px 2px 90px",
@@ -226,6 +275,7 @@ function DiffFileRow({
 
 export function DiffViewer({
   files,
+  sessionId,
   fileMode,
   onStageHunk,
   onUnstageHunk,
@@ -234,6 +284,8 @@ export function DiffViewer({
   contentMaxHeight = 420,
 }: {
   files: DiffFile[];
+  /// 提供它才能在展开时按需拉取 hunks
+  sessionId?: string;
   fileMode?: ScmActionMode | null;
   onStageHunk?: (path: string, hunkIndex: number) => void;
   onUnstageHunk?: (path: string, hunkIndex: number) => void;
@@ -276,6 +328,10 @@ export function DiffViewer({
         <DiffFileRow
           key={f.path}
           file={f}
+          sessionId={sessionId}
+          // 单文件视图（SCM 选中某个文件）直接展开；
+          // 多文件列表保持折叠，避免一次性铺开成千上万行
+          defaultOpen={files.length === 1}
           fileMode={fileMode}
           onStageHunk={onStageHunk}
           onUnstageHunk={onUnstageHunk}

@@ -1,12 +1,14 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAppI18n } from "../i18n";
+import { NewSessionForm } from "./NewSessionForm";
 import { ClaudeSession, SessionStatus, orderWorkspaceSessions, useSessionStore } from "../store/sessionStore";
 import { useWorkspaceStore, getWorkspaceColor } from "../store/workspaceStore";
+import { useShallow } from "zustand/react/shallow";
 import { useSettingsStore, RUNNER_LABELS, sanitizeRunnerConfig, isGlassTheme } from "../store/settingsStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { showExplorer, showSessionSurface } from "../services/workbenchCommands";
@@ -77,7 +79,9 @@ function StatusDot({ status }: { status: SessionStatus }) {
 }
 
 // ── Session 卡片 ─────────────────────────────────────────────
-function SessionCard({
+// memo：列表里每张卡片都会因为父组件任意一次重渲染而重建。
+// 所有 prop 都是原始值或稳定回调，浅比较足够。
+const SessionCard = memo(function SessionCard({
   session, isSelected, isOpened, accentColor, isGlass, showExpandButton, isDeleteConfirming, onClick, onCancelDelete, onExpand, onOpenExplore, onRemove, onRotateSuspend,
 }: {
   session: ClaudeSession;
@@ -130,8 +134,9 @@ function SessionCard({
   } as const;
   return (
     <motion.div
-      layout
-      layoutId={`session-card-${session.id}`}
+      // 去掉 layout / layoutId：它们会在每次渲染时测量每张卡片的盒模型，
+      // 而卡片会随状态翻转和 diff 刷新频繁重渲染。
+      // 进入/退出动画保留，重排由 dnd-kit 负责。
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -6, height: 0 }}
@@ -189,7 +194,10 @@ function SessionCard({
             overflow: "hidden",
             whiteSpace: "nowrap",
             flexShrink: 0,
-            transition: "opacity 0.12s, color 0.12s, max-width 0.12s",
+            // 只过渡 opacity / color：max-width 是布局属性，
+            // 过渡它会在每次悬停时逐帧触发重排，而每张卡片都有这个标签。
+            // 宽度瞬时变化，淡入仍然由 opacity 承担。
+            transition: "opacity 0.12s, color 0.12s",
           }}>
             {runnerLabel}
           </span>
@@ -393,7 +401,7 @@ function SessionCard({
       )}
     </motion.div>
   );
-}
+});
 
 function SortableSessionCard({ id, children }: { id: string; children: ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
@@ -414,6 +422,8 @@ function SortableSessionCard({ id, children }: { id: string; children: ReactNode
 // ── 主组件：SessionList ───────────────────────────────────────
 export function SessionList() {
   const { t } = useAppI18n();
+  // 只订阅真正用到的字段。整店订阅会让 splitDetailItemId、worktreeReadyIds
+  // 等无关字段的变化也触发整个列表重渲染。
   const {
     sessions,
     activeSessionId,
@@ -426,8 +436,22 @@ export function SessionList() {
     markWorktreeReady,
     reorderWorkspaceSessionsByVisibleMove,
     updateSession,
-  } = useSessionStore();
-  const { activeWorkspaceId } = useWorkspaceStore();
+  } = useSessionStore(
+    useShallow((s) => ({
+      sessions: s.sessions,
+      activeSessionId: s.activeSessionId,
+      expandedSessionId: s.expandedSessionId,
+      sessionOrderByWorkspace: s.sessionOrderByWorkspace,
+      removeSession: s.removeSession,
+      setActiveSession: s.setActiveSession,
+      setExpandedSession: s.setExpandedSession,
+      addSession: s.addSession,
+      markWorktreeReady: s.markWorktreeReady,
+      reorderWorkspaceSessionsByVisibleMove: s.reorderWorkspaceSessionsByVisibleMove,
+      updateSession: s.updateSession,
+    }))
+  );
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const focusSession = useWorkbenchStore((s) => s.focusSession);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspace = useWorkspaceStore((s) =>
@@ -462,7 +486,10 @@ export function SessionList() {
     );
   };
 
-  const handleNewSession = async () => {
+  const [showNewSessionForm, setShowNewSessionForm] = useState(false);
+
+  const handleNewSession = async (name: string) => {
+    setShowNewSessionForm(false);
     if (!activeWorkspace) return;
 
     let id: string;
@@ -487,7 +514,7 @@ export function SessionList() {
       id = String(maxId + 1);
     }
 
-    addSession(id, activeWorkspace.id, activeWorkspace.path, undefined, { ...runner });
+    addSession(id, activeWorkspace.id, activeWorkspace.path, name || undefined, { ...runner });
     setActiveSession(id);
     setExpandedSession(id);
     focusSession(id);
@@ -518,6 +545,7 @@ export function SessionList() {
         } | null>("setup_session_worktree", {
           workdir: activeWorkspace.path,
           sessionId: id,
+          name: name || null,
         });
 
         if (result) {
@@ -602,7 +630,7 @@ export function SessionList() {
         </div>
 
         <button
-          onClick={handleNewSession}
+          onClick={() => setShowNewSessionForm((open) => !open)}
           style={{
             background: "none",
             border: "none",
@@ -630,6 +658,15 @@ export function SessionList() {
           <span>{t("session.createNew")}</span>
         </button>
       </div>
+
+          <AnimatePresence>
+            {showNewSessionForm && (
+              <NewSessionForm
+                onCreate={(name) => { void handleNewSession(name); }}
+                onCancel={() => setShowNewSessionForm(false)}
+              />
+            )}
+          </AnimatePresence>
 
           {/* Session 列表 */}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useExplorerStore } from "./explorerStore";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { getI18n } from "../i18n";
 import { mirroredPersistStorage } from "./persistStorage";
@@ -236,7 +237,10 @@ export const useSessionStore = create<SessionStore>()(
         return s.id;
       },
 
-      removeSession: (id) =>
+      removeSession: (id) => {
+        // 同时回收该 session 的 explorer 缓存（目录项 + 节点图），
+        // 否则它们会一直留在内存里直到进程退出。
+        useExplorerStore.getState().removeSessionData(id);
         set((state) => {
           const sessions = state.sessions.filter((s) => s.id !== id);
           const activeSessionId =
@@ -271,7 +275,8 @@ export const useSessionStore = create<SessionStore>()(
             splitDetailItemId,
             splitCardItemIdsBySlot,
           };
-        }),
+        });
+      },
 
       setActiveSession: (id) =>
         set({ activeSessionId: id }),
@@ -323,6 +328,9 @@ export const useSessionStore = create<SessionStore>()(
           const removedIds = state.sessions
             .filter((s) => s.workspaceId === workspaceId)
             .map((s) => s.id);
+          // 回收这些 session 的 explorer 缓存，避免随 workspace 删除而泄漏
+          const explorer = useExplorerStore.getState();
+          removedIds.forEach((id) => explorer.removeSessionData(id));
           const removedItemIds = new Set(removedIds.map((id) => `session-${id}`));
           const worktreeReadyIds = new Set(state.worktreeReadyIds);
           removedIds.forEach((id) => worktreeReadyIds.delete(id));

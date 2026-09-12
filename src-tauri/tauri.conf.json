@@ -10,21 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Code Bar",
-        "width": 360,
-        "height": 220,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": false,
-        "resizable": false,
-        "shadow": false,
-        "skipTaskbar": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     },

@@ -1244,16 +1244,30 @@ pub fn trust_workspace(path: String) -> Result<(), String> {
 
     let mut json: Value = serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
 
-    let trusted = json
-        .as_object_mut()
-        .ok_or("settings.json 格式错误")?
-        .entry("trustedDirectories")
-        .or_insert(serde_json::json!([]));
+    // 启动时每个 workspace 都会调一次。之前无条件重写整个 settings.json，
+    // 即使目录早就在列表里——纯粹的磁盘写入，还会把用户文件的键序重排。
+    let added = {
+        let trusted = json
+            .as_object_mut()
+            .ok_or("settings.json 格式错误")?
+            .entry("trustedDirectories")
+            .or_insert(serde_json::json!([]));
 
-    if let Value::Array(arr) = trusted {
-        if !arr.iter().any(|v| v.as_str() == Some(&path)) {
-            arr.push(Value::String(path));
+        match trusted {
+            Value::Array(arr) => {
+                if arr.iter().any(|v| v.as_str() == Some(&path)) {
+                    false
+                } else {
+                    arr.push(Value::String(path));
+                    true
+                }
+            }
+            _ => false,
         }
+    };
+
+    if !added {
+        return Ok(());
     }
 
     let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;

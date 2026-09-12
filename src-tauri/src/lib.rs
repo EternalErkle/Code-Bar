@@ -81,20 +81,22 @@ pub fn run() {
             // 启动 CLI hook 接收器（Unix Socket / Windows Loopback TCP）
             hooks::start_hook_socket_servers(app.handle().clone());
 
-            // 启动时按持久化偏好自动协调通知与 hooks 配置。
-            match hooks::reconcile_integrations_on_startup(app.handle()) {
-                Ok(message) => {
-                    eprintln!("[hooks] startup reconcile ok: {message}");
-                }
-                Err(e) => {
-                    eprintln!("[hooks] startup reconcile failed: {e}");
-                }
+            // 启动时按持久化偏好协调通知与 hooks 配置。
+            //
+            // 放到后台线程：它要读写 settings.json，还要解析 node 的绝对路径
+            // （最坏情况退化成 3 秒的 shell 探测）。这些都不该挡在窗口出现之前。
+            {
+                let reconcile_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    match hooks::reconcile_integrations_on_startup(&reconcile_handle) {
+                        Ok(message) => eprintln!("[hooks] startup reconcile ok: {message}"),
+                        Err(e) => eprintln!("[hooks] startup reconcile failed: {e}"),
+                    }
+                });
             }
 
-            // 隐藏默认主窗口
-            if let Some(main_win) = app.get_webview_window("main") {
-                let _ = main_win.hide();
-            }
+            // 不再有默认 main 窗口：tauri.conf.json 的 windows 已清空，
+            // 否则它会加载整个前端，造成第二份事件监听与渲染进程。
 
             // 预创建 popup 窗口（hidden），让 WebView 在后台完成加载
             // 读取记忆的尺寸（没有则用默认值）
@@ -206,6 +208,7 @@ pub fn run() {
             git::diff::get_git_diff,
             git::diff::get_git_diff_branch,
             git::diff::get_git_diff_session_worktree,
+            git::diff::get_file_diff_hunks,
             git::status::get_git_status,
             git::content::get_git_diff_side,
             git::actions::git_stage_file,

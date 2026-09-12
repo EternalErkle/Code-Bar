@@ -173,6 +173,64 @@ function buildNodeGraph(cache: ExplorerDirectoryCache, sessionId: string): Explo
   return { nodesBySessionPath, childPathsBySessionDir };
 }
 
+/// 单个目录加载完成后的增量补丁：只重建这一层的子节点，
+/// 避免为 session 下已缓存的每个目录重新遍历一遍（展开 N 个目录时为 O(N²)）。
+function patchSessionGraphDirectory(
+  state: ExplorerNodeGraph,
+  sessionId: string,
+  dir: string,
+  entries: ExplorerEntry[],
+): ExplorerNodeGraph {
+  const key = dirKey(sessionId, dir);
+  const nextChildPaths = entries.map((entry) => entry.path);
+  const nextChildPathSet = new Set(nextChildPaths);
+  const nodesBySessionPath = { ...state.nodesBySessionPath };
+
+  (state.childPathsBySessionDir[key] ?? EMPTY_DIRS).forEach((childPath) => {
+    if (nextChildPathSet.has(childPath)) return;
+    delete nodesBySessionPath[dirKey(sessionId, childPath)];
+  });
+
+  entries.forEach((entry) => {
+    nodesBySessionPath[dirKey(sessionId, entry.path)] = {
+      id: `${sessionId}:${entry.path}`,
+      path: entry.path,
+      parentPath: dir || null,
+      name: entry.name,
+      kind: entry.kind,
+    };
+  });
+
+  return {
+    nodesBySessionPath,
+    childPathsBySessionDir: {
+      ...state.childPathsBySessionDir,
+      [key]: nextChildPaths,
+    },
+  };
+}
+
+/// 目录缓存失效后的增量补丁：丢掉被移除目录自身的子列表和它们直接子节点，
+/// 等价于全量重建但不需要遍历 session 下所有条目。
+function removeSessionGraphDirectories(
+  state: ExplorerNodeGraph,
+  sessionId: string,
+  dirs: string[],
+): ExplorerNodeGraph {
+  const nodesBySessionPath = { ...state.nodesBySessionPath };
+  const childPathsBySessionDir = { ...state.childPathsBySessionDir };
+
+  Object.entries(state.childPathsBySessionDir).forEach(([key, childPaths]) => {
+    if (!matchesSessionDir(key, sessionId, dirs)) return;
+    childPaths.forEach((childPath) => {
+      delete nodesBySessionPath[dirKey(sessionId, childPath)];
+    });
+    delete childPathsBySessionDir[key];
+  });
+
+  return { nodesBySessionPath, childPathsBySessionDir };
+}
+
 function replaceSessionGraph(
   state: ExplorerStore,
   sessionId: string,
@@ -337,7 +395,11 @@ function patchSessionGraphRename(
   };
 }
 
-function buildVisibleRows(state: ExplorerStore, sessionId: string, expandedDirSet: Set<string>): ExplorerVisibleRow[] {
+/// 视图模型只读这几张表。用交集类型而不是整个 store，
+/// 组件就能只订阅自己真正依赖的切片并把结果 memo 住。
+export type ExplorerViewSource = ExplorerNodeState & ExplorerDirectoryCache & ExplorerNodeGraph;
+
+function buildVisibleRows(state: ExplorerDirectoryCache & ExplorerNodeGraph, sessionId: string, expandedDirSet: Set<string>): ExplorerVisibleRow[] {
   const rows: ExplorerVisibleRow[] = [];
   let rowIndex = 0;
   const getLoading = (dir: string) => state.loadingBySessionPath[dirKey(sessionId, dir)] ?? false;
@@ -417,7 +479,7 @@ export function selectExplorerDirectoryCache(state: ExplorerDirectoryCache, sess
   };
 }
 
-export function selectExplorerViewModel(state: ExplorerStore, sessionId: string): ExplorerViewModel {
+export function selectExplorerViewModel(state: ExplorerViewSource, sessionId: string): ExplorerViewModel {
   const nodeState = selectExplorerNodeState(state, sessionId);
   const cacheState = selectExplorerDirectoryCache(state, sessionId);
   const visibleRows = buildVisibleRows(state, sessionId, new Set(nodeState.expandedDirs));
@@ -659,15 +721,11 @@ export const useExplorerStore = create<ExplorerStore>()((set, get) => ({
 
   setDirectoryEntries: (sessionId, dir, entries) =>
     set((state) => {
+      const sortedEntries = sortEntries(entries);
       const nextChildrenBySessionPath = {
         ...state.childrenBySessionPath,
-        [dirKey(sessionId, dir)]: sortEntries(entries),
+        [dirKey(sessionId, dir)]: sortedEntries,
       };
-      const nextGraph = buildNodeGraph({
-        childrenBySessionPath: nextChildrenBySessionPath,
-        loadingBySessionPath: state.loadingBySessionPath,
-        errorBySessionPath: state.errorBySessionPath,
-      }, sessionId);
       return {
         childrenBySessionPath: nextChildrenBySessionPath,
         errorBySessionPath: {
@@ -678,7 +736,7 @@ export const useExplorerStore = create<ExplorerStore>()((set, get) => ({
           ...state.loadingBySessionPath,
           [dirKey(sessionId, dir)]: false,
         },
-        ...replaceSessionGraph(state, sessionId, nextGraph),
+        ...patchSessionGraphDirectory(state, sessionId, dir, sortedEntries),
       };
     }),
 
@@ -699,11 +757,6 @@ export const useExplorerStore = create<ExplorerStore>()((set, get) => ({
       const nextChildrenBySessionPath = Object.fromEntries(
         Object.entries(state.childrenBySessionPath).filter(([key]) => !matchesSessionDir(key, sessionId, dirs)),
       );
-      const nextGraph = buildNodeGraph({
-        childrenBySessionPath: nextChildrenBySessionPath,
-        loadingBySessionPath: state.loadingBySessionPath,
-        errorBySessionPath: state.errorBySessionPath,
-      }, sessionId);
       return {
         childrenBySessionPath: nextChildrenBySessionPath,
         loadingBySessionPath: Object.fromEntries(
@@ -712,7 +765,7 @@ export const useExplorerStore = create<ExplorerStore>()((set, get) => ({
         errorBySessionPath: Object.fromEntries(
           Object.entries(state.errorBySessionPath).filter(([key]) => !matchesSessionDir(key, sessionId, dirs)),
         ),
-        ...replaceSessionGraph(state, sessionId, nextGraph),
+        ...removeSessionGraphDirectories(state, sessionId, dirs),
       };
     }),
 

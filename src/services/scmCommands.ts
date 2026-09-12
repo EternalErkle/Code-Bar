@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getI18n } from "../i18n";
 import { openDiff, revealExplorerPath } from "./editorCommands";
 import { useEditorStore } from "../store/editorStore";
 import { type ScmActionMode, type ScmEntryGroup, useScmStore } from "../store/scmStore";
@@ -153,7 +154,7 @@ export async function applyScmHunk(sessionId: string, path: string, mode: ScmAct
       return;
     }
     if (mode !== "unstaged") {
-      throw new Error("当前只支持从未暂存变更中 discard hunk");
+      throw new Error(getI18n().t("scm.discardHunkUnstagedOnly"));
     }
     await invoke("git_discard_hunk", { workdir: session.workdir, path, hunkIndex });
   });

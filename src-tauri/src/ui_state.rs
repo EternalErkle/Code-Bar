@@ -462,10 +462,14 @@ fn current_branch(path: &Path) -> Option<String> {
     }
 }
 
-fn normalize_task_title(task: &str, session_id: &str) -> String {
+fn normalize_task_title(
+    locale: crate::i18n::AppLocale,
+    task: &str,
+    session_id: &str,
+) -> String {
     let trimmed = task.trim();
     if trimmed.is_empty() {
-        return format!("会话 {session_id}");
+        return crate::i18n::translate(locale, "session.default_name", &[("id", session_id)]);
     }
 
     let chars = trimmed.chars().collect::<Vec<_>>();
@@ -505,7 +509,10 @@ fn extract_claude_first_task(json: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn latest_claude_hint(session_id: &str) -> Option<RecoveryHint> {
+fn latest_claude_hint(
+    locale: crate::i18n::AppLocale,
+    session_id: &str,
+) -> Option<RecoveryHint> {
     let projects_dir = home_dir()?.join(".claude").join("projects");
     let suffix = format!("session-{session_id}");
     let mut best: Option<RecoveryHint> = None;
@@ -564,7 +571,7 @@ fn latest_claude_hint(session_id: &str) -> Option<RecoveryHint> {
             // 有些 Claude 会话在未成功发起首条 query 前也会落盘 session 文件。
             // 这种场景下仍然应该可恢复，任务标题退化为通用文案。
             if first_task.is_empty() {
-                first_task = "继续会话".to_string();
+                first_task = crate::i18n::translate(locale, "session.continue_session", &[]);
             }
 
             select_newer_hint(
@@ -719,6 +726,7 @@ fn load_codex_history_index() -> HashMap<String, RecoveryHint> {
 }
 
 fn resolve_recovery_hint(
+    locale: crate::i18n::AppLocale,
     session_id: &str,
     worktree_path: &Path,
     recovery_bindings: &HashMap<String, RecoveryBinding>,
@@ -727,7 +735,7 @@ fn resolve_recovery_hint(
     let worktree_key = normalize_expanded_path(&worktree_path.to_string_lossy());
     if let Some(binding) = recovery_bindings.get(session_id) {
         if binding.runner_type == "claude-code" {
-            let mut hint = latest_claude_hint(session_id)?;
+            let mut hint = latest_claude_hint(locale, session_id)?;
             hint.provider_session_id = binding.provider_session_id.clone();
             hint.modified_at_ms = hint.modified_at_ms.max(binding.updated_at_ms);
             return Some(hint);
@@ -743,10 +751,11 @@ fn resolve_recovery_hint(
         }
     }
 
-    latest_claude_hint(session_id)
+    latest_claude_hint(locale, session_id)
 }
 
 fn resolve_existing_session_binding(
+    locale: crate::i18n::AppLocale,
     session: &BackfillSessionBindingInput,
     codex_history: &HashMap<String, RecoveryHint>,
 ) -> Option<BackfilledSessionBinding> {
@@ -761,7 +770,7 @@ fn resolve_existing_session_binding(
     }
 
     let hint = match session.runner_type.trim() {
-        "claude-code" => latest_claude_hint(&session.session_id)?,
+        "claude-code" => latest_claude_hint(locale, &session.session_id)?,
         "codex" => {
             let worktree_path = normalize_path(session.worktree_path.clone())?;
             codex_history.get(&worktree_path).cloned()?
@@ -965,11 +974,13 @@ pub fn backfill_workspace_session_bindings(
         return Ok(vec![]);
     }
 
+    let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     let codex_history = load_codex_history_index();
     let mut backfilled = Vec::new();
 
     for session in sessions {
-        let Some(binding) = resolve_existing_session_binding(&session, &codex_history) else {
+        let Some(binding) = resolve_existing_session_binding(locale, &session, &codex_history)
+        else {
             continue;
         };
 
@@ -1116,6 +1127,7 @@ pub fn recover_workspace_sessions(
         return Ok(vec![]);
     }
 
+    let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     let deleted_state = read_deleted_ui_state(&app)?;
     let recovery_bindings = read_recovery_bindings(&app)?
         .into_iter()
@@ -1174,6 +1186,7 @@ pub fn recover_workspace_sessions(
             }
 
             let Some(hint) = resolve_recovery_hint(
+                locale,
                 &session_id,
                 &worktree_path,
                 &recovery_bindings,
@@ -1188,7 +1201,7 @@ pub fn recover_workspace_sessions(
 
             recovered.push(RecoveredSession {
                 id: session_id.clone(),
-                name: normalize_task_title(&current_task, &session_id),
+                name: normalize_task_title(locale, &current_task, &session_id),
                 workspace_id: workspace.workspace_id.clone(),
                 workdir: workdir.clone(),
                 status: "idle".to_string(),

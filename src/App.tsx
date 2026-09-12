@@ -54,6 +54,11 @@ interface BackfilledSessionBinding {
   providerSessionId: string;
 }
 
+interface WorkspaceSessionBootstrap {
+  recovered: ClaudeSession[];
+  backfilled: BackfilledSessionBinding[];
+}
+
 export default function App() {
   const { t } = useAppI18n();
   const {
@@ -481,16 +486,10 @@ export default function App() {
         workspacePath: workspace.path,
       }));
       const knownIds = new Set(useSessionStore.getState().sessions.map((s) => s.id));
-      const recovered = await invoke<ClaudeSession[]>("recover_workspace_sessions", {
-        workspaces: workspaceInputs,
-        existingSessionIds: [...knownIds],
-      }).catch(() => []);
 
-      if (cancelled) return;
-      if (recovered.length > 0) {
-        useSessionStore.getState().mergeRecoveredSessions(recovered);
-      }
-
+      // 回填候选只会来自已经在 store 里的 session：恢复出来的 session 一定带
+      // providerSessionId，永远不满足候选条件，而恢复本身会跳过已存在的 id，
+      // 所以在调用前算候选和原来在恢复之后算是等价的。
       const backfillCandidates = useSessionStore
         .getState()
         .sessions
@@ -506,15 +505,19 @@ export default function App() {
           providerSessionId: session.providerSessionId ?? null,
         }));
 
-      if (backfillCandidates.length === 0) return;
-
-      const backfilled = await invoke<BackfilledSessionBinding[]>("backfill_workspace_session_bindings", {
+      const bootstrap = await invoke<WorkspaceSessionBootstrap>("bootstrap_workspace_sessions", {
+        workspaces: workspaceInputs,
+        existingSessionIds: [...knownIds],
         sessions: backfillCandidates,
-      }).catch(() => []);
+      }).catch(() => null);
 
-      if (cancelled || backfilled.length === 0) return;
+      if (cancelled || !bootstrap) return;
 
-      backfilled.forEach(({ sessionId, providerSessionId }) => {
+      if (bootstrap.recovered.length > 0) {
+        useSessionStore.getState().mergeRecoveredSessions(bootstrap.recovered);
+      }
+
+      bootstrap.backfilled.forEach(({ sessionId, providerSessionId }) => {
         const current = useSessionStore.getState().sessions.find((session) => session.id === sessionId);
         if (!current || current.providerSessionId?.trim()) return;
         updateSession(sessionId, { providerSessionId });

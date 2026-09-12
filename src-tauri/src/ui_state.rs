@@ -505,81 +505,103 @@ fn extract_claude_first_task(json: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn latest_claude_hint(session_id: &str) -> Option<RecoveryHint> {
-    let projects_dir = home_dir()?.join(".claude").join("projects");
-    let suffix = format!("session-{session_id}");
-    let mut best: Option<RecoveryHint> = None;
+/// ~/.claude/projects 的一次性目录索引。
+///
+/// 之前 latest_claude_hint 每次调用都要 read_dir 整个 projects 目录，
+/// 而启动时每个 worktree 都会调一次，等于按 session 数重复走文件系统。
+/// 这里只列一次目录；单个 jsonl 的解析仍然按需进行，和原来一样。
+struct ClaudeHistoryIndex {
+    project_dirs: Vec<(String, PathBuf)>,
+}
 
-    let Ok(project_entries) = fs::read_dir(&projects_dir) else {
-        return None;
-    };
-
-    for entry in project_entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
+impl ClaudeHistoryIndex {
+    fn load() -> Self {
+        let mut project_dirs = Vec::new();
+        let Some(projects_dir) = home_dir().map(|home| home.join(".claude").join("projects")) else {
+            return Self { project_dirs };
         };
-        if !name.ends_with(&suffix) {
-            continue;
-        }
-
-        let Ok(files) = fs::read_dir(&path) else {
-            continue;
+        let Ok(project_entries) = fs::read_dir(&projects_dir) else {
+            return Self { project_dirs };
         };
 
-        for file in files.flatten() {
-            let file_path = file.path();
-            if file_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        for entry in project_entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
                 continue;
             }
-
-            let provider_session_id = file_path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if provider_session_id.is_empty() {
-                continue;
-            }
-
-            let Ok(handle) = fs::File::open(&file_path) else {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let reader = BufReader::new(handle);
-            let mut first_task = String::new();
-
-            for line in reader.lines().map_while(Result::ok) {
-                let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                if let Some(task) = extract_claude_first_task(&json) {
-                    first_task = task;
-                    break;
-                }
-            }
-
-            // 有些 Claude 会话在未成功发起首条 query 前也会落盘 session 文件。
-            // 这种场景下仍然应该可恢复，任务标题退化为通用文案。
-            if first_task.is_empty() {
-                first_task = "继续会话".to_string();
-            }
-
-            select_newer_hint(
-                &mut best,
-                RecoveryHint {
-                    runner_type: "claude-code".to_string(),
-                    provider_session_id,
-                    current_task: first_task,
-                    modified_at_ms: modified_millis(&file_path),
-                },
-            );
+            project_dirs.push((name.to_string(), path));
         }
+
+        Self { project_dirs }
     }
 
-    best
+    fn latest_hint(&self, session_id: &str) -> Option<RecoveryHint> {
+        let suffix = format!("session-{session_id}");
+        let mut best: Option<RecoveryHint> = None;
+
+        for (name, path) in &self.project_dirs {
+            if !name.ends_with(&suffix) {
+                continue;
+            }
+
+            let Ok(files) = fs::read_dir(path) else {
+                continue;
+            };
+
+            for file in files.flatten() {
+                let file_path = file.path();
+                if file_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                    continue;
+                }
+
+                let provider_session_id = file_path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if provider_session_id.is_empty() {
+                    continue;
+                }
+
+                let Ok(handle) = fs::File::open(&file_path) else {
+                    continue;
+                };
+                let reader = BufReader::new(handle);
+                let mut first_task = String::new();
+
+                for line in reader.lines().map_while(Result::ok) {
+                    let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    if let Some(task) = extract_claude_first_task(&json) {
+                        first_task = task;
+                        break;
+                    }
+                }
+
+                // 有些 Claude 会话在未成功发起首条 query 前也会落盘 session 文件。
+                // 这种场景下仍然应该可恢复，任务标题退化为通用文案。
+                if first_task.is_empty() {
+                    first_task = "继续会话".to_string();
+                }
+
+                select_newer_hint(
+                    &mut best,
+                    RecoveryHint {
+                        runner_type: "claude-code".to_string(),
+                        provider_session_id,
+                        current_task: first_task,
+                        modified_at_ms: modified_millis(&file_path),
+                    },
+                );
+            }
+        }
+
+        best
+    }
 }
 
 fn is_codex_wrapper_text(text: &str) -> bool {
@@ -723,11 +745,12 @@ fn resolve_recovery_hint(
     worktree_path: &Path,
     recovery_bindings: &HashMap<String, RecoveryBinding>,
     codex_history: &HashMap<String, RecoveryHint>,
+    claude_index: &ClaudeHistoryIndex,
 ) -> Option<RecoveryHint> {
     let worktree_key = normalize_expanded_path(&worktree_path.to_string_lossy());
     if let Some(binding) = recovery_bindings.get(session_id) {
         if binding.runner_type == "claude-code" {
-            let mut hint = latest_claude_hint(session_id)?;
+            let mut hint = claude_index.latest_hint(session_id)?;
             hint.provider_session_id = binding.provider_session_id.clone();
             hint.modified_at_ms = hint.modified_at_ms.max(binding.updated_at_ms);
             return Some(hint);
@@ -743,12 +766,13 @@ fn resolve_recovery_hint(
         }
     }
 
-    latest_claude_hint(session_id)
+    claude_index.latest_hint(session_id)
 }
 
 fn resolve_existing_session_binding(
     session: &BackfillSessionBindingInput,
     codex_history: &HashMap<String, RecoveryHint>,
+    claude_index: &ClaudeHistoryIndex,
 ) -> Option<BackfilledSessionBinding> {
     if session
         .provider_session_id
@@ -761,7 +785,7 @@ fn resolve_existing_session_binding(
     }
 
     let hint = match session.runner_type.trim() {
-        "claude-code" => latest_claude_hint(&session.session_id)?,
+        "claude-code" => claude_index.latest_hint(&session.session_id)?,
         "codex" => {
             let worktree_path = normalize_path(session.worktree_path.clone())?;
             codex_history.get(&worktree_path).cloned()?
@@ -966,15 +990,26 @@ pub fn backfill_workspace_session_bindings(
     }
 
     let codex_history = load_codex_history_index();
+    let claude_index = ClaudeHistoryIndex::load();
+    backfill_session_bindings_with(&app, sessions, &codex_history, &claude_index)
+}
+
+fn backfill_session_bindings_with(
+    app: &tauri::AppHandle,
+    sessions: Vec<BackfillSessionBindingInput>,
+    codex_history: &HashMap<String, RecoveryHint>,
+    claude_index: &ClaudeHistoryIndex,
+) -> Result<Vec<BackfilledSessionBinding>, String> {
     let mut backfilled = Vec::new();
 
     for session in sessions {
-        let Some(binding) = resolve_existing_session_binding(&session, &codex_history) else {
+        let Some(binding) = resolve_existing_session_binding(&session, codex_history, claude_index)
+        else {
             continue;
         };
 
         upsert_recovery_binding(
-            &app,
+            app,
             RecoveryBinding {
                 session_id: binding.session_id.clone(),
                 runner_type: session.runner_type.trim().to_string(),
@@ -1106,6 +1141,62 @@ pub struct RecoverWorkspaceInput {
     workspace_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSessionBootstrap {
+    recovered: Vec<RecoveredSession>,
+    backfilled: Vec<BackfilledSessionBinding>,
+}
+
+/// 启动时的单次入口，替代先后调用 recover_workspace_sessions 和
+/// backfill_workspace_session_bindings。两者过去各自 load_codex_history_index()
+/// 走一遍 ~/.codex/sessions，而 claude 那侧更糟：latest_claude_hint 会按
+/// 每个 worktree 重扫一次 ~/.claude/projects。这里两份索引各建一次。
+///
+/// 两半各自吞掉自己的错误，对应前端原本对两个 invoke 各挂的 .catch(() => [])。
+#[tauri::command]
+pub fn bootstrap_workspace_sessions(
+    app: tauri::AppHandle,
+    workspaces: Vec<RecoverWorkspaceInput>,
+    existing_session_ids: Vec<String>,
+    sessions: Vec<BackfillSessionBindingInput>,
+) -> Result<WorkspaceSessionBootstrap, String> {
+    if workspaces.is_empty() && sessions.is_empty() {
+        return Ok(WorkspaceSessionBootstrap {
+            recovered: vec![],
+            backfilled: vec![],
+        });
+    }
+
+    let codex_history = load_codex_history_index();
+    let claude_index = ClaudeHistoryIndex::load();
+
+    let recovered = if workspaces.is_empty() {
+        vec![]
+    } else {
+        recover_sessions_with(
+            &app,
+            workspaces,
+            existing_session_ids,
+            &codex_history,
+            &claude_index,
+        )
+        .unwrap_or_default()
+    };
+
+    let backfilled = if sessions.is_empty() {
+        vec![]
+    } else {
+        backfill_session_bindings_with(&app, sessions, &codex_history, &claude_index)
+            .unwrap_or_default()
+    };
+
+    Ok(WorkspaceSessionBootstrap {
+        recovered,
+        backfilled,
+    })
+}
+
 #[tauri::command]
 pub fn recover_workspace_sessions(
     app: tauri::AppHandle,
@@ -1116,12 +1207,29 @@ pub fn recover_workspace_sessions(
         return Ok(vec![]);
     }
 
-    let deleted_state = read_deleted_ui_state(&app)?;
-    let recovery_bindings = read_recovery_bindings(&app)?
+    let codex_history = load_codex_history_index();
+    let claude_index = ClaudeHistoryIndex::load();
+    recover_sessions_with(
+        &app,
+        workspaces,
+        existing_session_ids,
+        &codex_history,
+        &claude_index,
+    )
+}
+
+fn recover_sessions_with(
+    app: &tauri::AppHandle,
+    workspaces: Vec<RecoverWorkspaceInput>,
+    existing_session_ids: Vec<String>,
+    codex_history: &HashMap<String, RecoveryHint>,
+    claude_index: &ClaudeHistoryIndex,
+) -> Result<Vec<RecoveredSession>, String> {
+    let deleted_state = read_deleted_ui_state(app)?;
+    let recovery_bindings = read_recovery_bindings(app)?
         .into_iter()
         .map(|binding| (binding.session_id.clone(), binding))
         .collect::<HashMap<_, _>>();
-    let codex_history = load_codex_history_index();
     let existing = existing_session_ids.into_iter().collect::<HashSet<_>>();
     let mut recovered = Vec::new();
 
@@ -1177,7 +1285,8 @@ pub fn recover_workspace_sessions(
                 &session_id,
                 &worktree_path,
                 &recovery_bindings,
-                &codex_history,
+                codex_history,
+                claude_index,
             ) else {
                 continue;
             };

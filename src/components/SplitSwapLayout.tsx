@@ -6,10 +6,12 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppI18n } from "../i18n";
 import { PtyTerminal } from "./PtyTerminal";
@@ -35,8 +37,13 @@ function sanitizeSessionKey(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function buildWidgetTerminalSessionId(sessionId: string, ptySessionKey: string) {
-  return `widget-${sanitizeSessionKey(sessionId)}-${sanitizeSessionKey(ptySessionKey)}`;
+// Deliberately NOT keyed on the Code Bar session id: the widget terminal is a plain
+// user shell, not a per-session process. Including the session id changed the React key
+// whenever the user expanded another session, which unmounted PtyTerminal and killed the
+// shell along with its history and any running command. The terminal now stays mounted
+// and is told to `cd` into the newly selected session's working directory instead.
+function buildWidgetTerminalSessionId(ptySessionKey: string) {
+  return `widget-${sanitizeSessionKey(ptySessionKey)}`;
 }
 
 function createTerminalTab(tabs: SplitWidgetTerminalItem["tabs"]) {
@@ -169,6 +176,12 @@ function SessionDetailBody({
   );
 }
 
+const IS_WINDOWS = navigator.userAgent.toLowerCase().includes("windows");
+
+function buildCdCommand(workdir: string) {
+  return IS_WINDOWS ? `cd /d "${workdir}"` : `cd ${shellQuote(workdir)}`;
+}
+
 function TerminalWidgetBody({ itemId }: { itemId: string }) {
   const { t } = useAppI18n();
   const widget = useSettingsStore((s) => {
@@ -182,10 +195,42 @@ function TerminalWidgetBody({ itemId }: { itemId: string }) {
     [expandedSessionId, sessions]
   );
   const terminalWorkdir = session?.worktreePath ?? session?.workdir ?? "";
-  const terminalCommand = navigator.userAgent.toLowerCase().includes("windows") ? "cmd.exe" : "sh";
-  const terminalArgs = navigator.userAgent.toLowerCase().includes("windows")
-    ? ["/K", `cd /d "${terminalWorkdir}"`]
-    : ["-lc", `cd ${shellQuote(terminalWorkdir)} && exec zsh -i`];
+
+  // Resolve the user's actual login shell in the backend rather than assuming zsh.
+  const [shell, setShell] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fallback = IS_WINDOWS ? "cmd.exe" : "/bin/sh";
+    invoke<string>("resolve_user_shell")
+      .then((value) => {
+        if (!cancelled) setShell(value?.trim() || fallback);
+      })
+      .catch(() => {
+        if (!cancelled) setShell(fallback);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // start_pty_session already spawns the shell inside `workdir`, so the running shell
+  // only needs re-pointing when the user expands a different session while the terminal
+  // stays alive. Sending `cd` keeps the shell, its history and its scrollback intact.
+  const tabs = widget?.tabs;
+  const previousWorkdirRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!terminalWorkdir || !tabs) return;
+    const previous = previousWorkdirRef.current;
+    previousWorkdirRef.current = terminalWorkdir;
+    if (previous === null || previous === terminalWorkdir) return;
+    const query = buildCdCommand(terminalWorkdir);
+    tabs.forEach((tab) => {
+      void invoke("send_pty_query", {
+        sessionId: buildWidgetTerminalSessionId(tab.ptySessionKey),
+        query,
+      }).catch(() => {});
+    });
+  }, [tabs, terminalWorkdir]);
 
   if (!widget) return null;
 
@@ -208,10 +253,15 @@ function TerminalWidgetBody({ itemId }: { itemId: string }) {
     );
   }
 
+  // Wait for the resolved shell so the PTY is never started with the wrong command.
+  if (!shell) return null;
+
+  const terminalArgs = IS_WINDOWS ? [] : ["-i"];
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {widget.tabs.map((tab) => {
-        const ptySessionId = buildWidgetTerminalSessionId(session.id, tab.ptySessionKey);
+        const ptySessionId = buildWidgetTerminalSessionId(tab.ptySessionKey);
         const isActiveTab = tab.id === widget.activeTabId;
         return (
           <div
@@ -226,7 +276,7 @@ function TerminalWidgetBody({ itemId }: { itemId: string }) {
           >
             <PtyTerminal
               sessionId={ptySessionId}
-              command={terminalCommand}
+              command={shell}
               args={terminalArgs}
               workdir={terminalWorkdir}
               active={isActiveTab}

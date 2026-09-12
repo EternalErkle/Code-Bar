@@ -230,6 +230,7 @@ pub fn run() {
             git::worktree::prune_orphan_worktrees,
             // PTY 终端
             pty::start_pty_session,
+            pty::resolve_user_shell,
             pty::write_pty,
             pty::resize_pty,
             pty::stop_pty_session,

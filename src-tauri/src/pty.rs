@@ -315,6 +315,40 @@ pub async fn start_pty_session(
     Ok(())
 }
 
+/// 解析用户真实的交互式 shell，供通用终端组件使用。
+///
+/// 之前终端组件硬编码 `exec zsh -i`：bash / fish 用户会被强制切到 zsh，
+/// 未安装 zsh 的机器上则直接启动失败。
+#[tauri::command]
+pub fn resolve_user_shell() -> String {
+    #[cfg(windows)]
+    {
+        return std::env::var("COMSPEC")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Ok(shell) = std::env::var("SHELL") {
+            let shell = shell.trim();
+            if !shell.is_empty() && std::path::Path::new(shell).exists() {
+                return shell.to_string();
+            }
+        }
+
+        for candidate in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+            if std::path::Path::new(candidate).exists() {
+                return candidate.to_string();
+            }
+        }
+
+        "/bin/sh".to_string()
+    }
+}
+
 /// 向 PTY 写入数据（键盘输入，base64 编码）
 #[tauri::command]
 pub fn write_pty(app: tauri::AppHandle, session_id: String, data: String) -> Result<(), String> {

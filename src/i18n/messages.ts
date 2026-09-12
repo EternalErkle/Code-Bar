@@ -253,6 +253,10 @@ const messages = {
       discardHunk: "Discard hunk",
       stageHunk: "Stage hunk",
       unstageHunk: "Unstage hunk",
+      confirmDiscard: "确认丢弃",
+      confirmDelete: "确认删除",
+      confirmDiscardHunk: "确认丢弃",
+      discardHunkUnstagedOnly: "当前只支持从未暂存变更中丢弃 hunk",
     },
     explorer: {
       enterExplorer: "选择一个会话进入 Explorer。",
@@ -611,6 +615,10 @@ const messages = {
       discardHunk: "Discard hunk",
       stageHunk: "Stage hunk",
       unstageHunk: "Unstage hunk",
+      confirmDiscard: "Discard?",
+      confirmDelete: "Delete?",
+      confirmDiscardHunk: "Discard?",
+      discardHunkUnstagedOnly: "Discarding a hunk is only supported for unstaged changes",
     },
     explorer: {
       enterExplorer: "Select a session to enter Explorer.",
@@ -969,6 +977,10 @@ const messages = {
       discardHunk: "Discard hunk",
       stageHunk: "Stage hunk",
       unstageHunk: "Unstage hunk",
+      confirmDiscard: "تأكيد التجاهل",
+      confirmDelete: "تأكيد الحذف",
+      confirmDiscardHunk: "تأكيد التجاهل",
+      discardHunkUnstagedOnly: "تجاهل الجزء مدعوم فقط للتغييرات غير المرحّلة",
     },
     explorer: {
       enterExplorer: "اختر جلسة للدخول إلى المستكشف.",

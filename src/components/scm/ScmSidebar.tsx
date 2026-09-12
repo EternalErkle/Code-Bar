@@ -144,12 +144,17 @@ function GroupSection({
 }) {
   const { t } = useAppI18n();
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+  // `discard` restores a file from HEAD and `delete` reaches `git clean -fd`, which
+  // destroys an untracked file with no recovery. Both are armed by a first click and
+  // only committed by a second, mirroring the session-delete confirm in SessionList.
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
 
   return (
     <>
       {files.map((file) => {
         const isSelected = selectedPath === file.path;
         const isHovered = hoveredPath === file.path;
+        const isConfirming = pendingPath === file.path;
         return (
           <div
             key={`${group}:${file.path}`}
@@ -193,18 +198,61 @@ function GroupSection({
                 {file.path}
               </span>
             </button>
-            <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0, opacity: isSelected || isHovered ? 1 : 0, pointerEvents: isSelected || isHovered ? "auto" : "none" }}>
-              {(group === "unstaged" || group === "untracked") && (
-                <ActionButton label={t("scm.stage")} icon={<Plus size={12} strokeWidth={1.8} />} onClick={() => stageScmFile(sessionId, file.path)} disabled={busy} />
-              )}
-              {group === "staged" && (
-                <ActionButton label={t("scm.unstage")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => unstageScmFile(sessionId, file.path)} disabled={busy} />
-              )}
-              {group === "unstaged" && (
-                <ActionButton label={t("scm.discard")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => discardScmFile(sessionId, file.path, "unstaged")} disabled={busy} />
-              )}
-              {group === "untracked" && (
-                <ActionButton label={t("scm.delete")} icon={<Trash2 size={12} strokeWidth={1.8} />} onClick={() => discardScmFile(sessionId, file.path, "untracked")} disabled={busy} />
+            <div style={{ display: "flex", alignItems: "center", gap: isConfirming ? 6 : 2, flexShrink: 0, opacity: isSelected || isHovered || isConfirming ? 1 : 0, pointerEvents: isSelected || isHovered || isConfirming ? "auto" : "none" }}>
+              {isConfirming ? (
+                <>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPendingPath(null);
+                      void discardScmFile(sessionId, file.path, group === "untracked" ? "untracked" : "unstaged");
+                    }}
+                    disabled={busy}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: "3px 2px",
+                      color: "var(--ci-red)",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      cursor: busy ? "default" : "pointer",
+                    }}
+                  >
+                    {group === "untracked" ? t("scm.confirmDelete") : t("scm.confirmDiscard")}
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPendingPath(null);
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: "3px 2px",
+                      color: "var(--ci-text-muted)",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {t("common.cancel")}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {(group === "unstaged" || group === "untracked") && (
+                    <ActionButton label={t("scm.stage")} icon={<Plus size={12} strokeWidth={1.8} />} onClick={() => stageScmFile(sessionId, file.path)} disabled={busy} />
+                  )}
+                  {group === "staged" && (
+                    <ActionButton label={t("scm.unstage")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => unstageScmFile(sessionId, file.path)} disabled={busy} />
+                  )}
+                  {group === "unstaged" && (
+                    <ActionButton label={t("scm.discard")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => setPendingPath(file.path)} disabled={busy} />
+                  )}
+                  {group === "untracked" && (
+                    <ActionButton label={t("scm.delete")} icon={<Trash2 size={12} strokeWidth={1.8} />} onClick={() => setPendingPath(file.path)} disabled={busy} />
+                  )}
+                </>
               )}
             </div>
           </div>

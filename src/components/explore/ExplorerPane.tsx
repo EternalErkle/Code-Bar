@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   ChevronDown,
   ChevronRight,
@@ -10,12 +11,16 @@ import { useAppI18n } from "../../i18n";
 import { openFile, loadDirectory } from "../../services/editorCommands";
 import { showScm, resetWorkbenchMode } from "../../services/workbenchCommands";
 import { useEditorBufferStore } from "../../store/editorBufferStore";
-import { getExplorerDirectoryError, getExplorerDirectoryLoading, hasExplorerDirectorySnapshot, selectExplorerViewModel, useExplorerStore } from "../../store/explorerStore";
+import { getExplorerDirectoryError, getExplorerDirectoryLoading, hasExplorerDirectorySnapshot, selectExplorerViewModel, useExplorerStore, type ExplorerVisibleRow } from "../../store/explorerStore";
 import { EMPTY_SCM_GROUPS, useScmStore } from "../../store/scmStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { type ClaudeSession } from "../../store/sessionStore";
 
-function FileStatusGlyph({ kind }: { kind: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted" | null }) {
+type FileStatusKind = "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted";
+
+const EMPTY_PATHS: string[] = [];
+
+function FileStatusGlyph({ kind }: { kind: FileStatusKind | null }) {
   const color = kind === "conflicted"
     ? "var(--ci-red)"
     : kind === "untracked" || kind === "added"
@@ -54,6 +59,107 @@ const rowBaseStyle = {
   textAlign: "left" as const,
 };
 
+interface ExplorerRowProps {
+  node: ExplorerVisibleRow;
+  isOpen: boolean;
+  isSelected: boolean;
+  isHovered: boolean;
+  isTouched: boolean;
+  isDirty: boolean;
+  statusKind: FileStatusKind | null;
+  activeBackground: string;
+  hoverBackground: string;
+  onToggleDir: (path: string) => void;
+  onOpenFile: (path: string, preview: boolean) => void;
+  onHoverEnter: (key: string) => void;
+  onHoverLeave: (key: string) => void;
+}
+
+// 行拆成 memo 组件：悬停/脏标记变化时只有相关行重渲染，
+// 不再连带把整棵树的 DOM 重新走一遍。
+const ExplorerRow = memo(function ExplorerRow({
+  node,
+  isOpen,
+  isSelected,
+  isHovered,
+  isTouched,
+  isDirty,
+  statusKind,
+  activeBackground,
+  hoverBackground,
+  onToggleDir,
+  onOpenFile,
+  onHoverEnter,
+  onHoverLeave,
+}: ExplorerRowProps) {
+  const handleEnter = useCallback(() => onHoverEnter(node.key), [node.key, onHoverEnter]);
+  const handleLeave = useCallback(() => onHoverLeave(node.key), [node.key, onHoverLeave]);
+
+  if (node.type === "dir") {
+    return (
+      <div>
+        <button
+          onClick={() => onToggleDir(node.path)}
+          onMouseEnter={handleEnter}
+          onMouseLeave={handleLeave}
+          style={{
+            ...rowBaseStyle,
+            padding: "0 10px",
+            paddingInlineStart: 8 + node.depth * 14,
+            background: isHovered ? hoverBackground : "transparent",
+            color: isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
+            cursor: "pointer",
+            outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
+            outlineOffset: -1,
+          }}
+        >
+          <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
+            {isOpen ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
+          </span>
+          <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
+            <Folder size={12} strokeWidth={1.8} />
+          </span>
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
+          {node.loading && <span style={{ marginInlineStart: "auto", fontSize: 10, color: "var(--ci-text-dim)" }}>…</span>}
+        </button>
+        {node.error && (
+          <div style={{ paddingInlineStart: 34 + node.depth * 14, paddingTop: 2, paddingBottom: 6, fontSize: 10, color: "var(--ci-deleted-text)" }}>
+            {node.error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => onOpenFile(node.path, true)}
+      onDoubleClick={() => onOpenFile(node.path, false)}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      style={{
+        ...rowBaseStyle,
+        padding: "0 10px",
+        paddingInlineStart: 24 + node.depth * 14,
+        background: isSelected ? activeBackground : isHovered ? hoverBackground : "transparent",
+        color: isSelected || isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
+        cursor: "pointer",
+        borderInlineStart: isSelected ? "1px solid var(--ci-accent)" : "1px solid transparent",
+        outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
+        outlineOffset: -1,
+      }}
+      title={node.path}
+    >
+      <FileStatusGlyph kind={statusKind} />
+      <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: isSelected ? "var(--ci-text)" : "var(--ci-text-dim)", flexShrink: 0 }}>
+        <FileCode2 size={11} strokeWidth={1.8} />
+      </span>
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
+      {isDirty && <span style={{ color: "var(--ci-accent)", fontSize: 10, marginInlineStart: "auto" }}>●</span>}
+    </button>
+  );
+});
+
 export function ExplorerPane({
   session,
   onRefreshDiff,
@@ -63,22 +169,67 @@ export function ExplorerPane({
 }) {
   const { t } = useAppI18n();
   const theme = useSettingsStore((s) => s.settings.theme);
-  const buffersByTabId = useEditorBufferStore((s) => s.buffersByTabId);
   const scmSnapshot = useScmStore((s) => s.snapshotBySessionId[session.id]?.files ?? session.diffFiles);
   const scmGroups = useScmStore((s) => s.statusBySessionId[session.id] ?? EMPTY_SCM_GROUPS);
-  const explorerStore = useExplorerStore();
-  const explorerView = useMemo(() => selectExplorerViewModel(explorerStore, session.id), [explorerStore, session.id]);
-  const { toggleDir } = explorerStore;
-  const { expandedDirs, selectedPath, selectedRevealMode, rootLoading, rootError, hasRootSnapshot, rowCount, rowIndexByPath, pathByRowIndex, visiblePathSet, visibleRows } = explorerView;
-  const touchedPaths = explorerStore.touchedPathsBySession[session.id] ?? [];
+
+  // 只订阅本 session 中处于未保存状态的 tab id。订阅整张 buffersByTabId
+  // 会让编辑器里的每次按键都重渲染整棵文件树。
+  const dirtyTabIds = useEditorBufferStore(useShallow((s) => {
+    const prefix = `code:${session.id}:`;
+    const ids: string[] = [];
+    Object.entries(s.buffersByTabId).forEach(([tabId, buffer]) => {
+      if (buffer.dirty && tabId.startsWith(prefix)) ids.push(tabId);
+    });
+    return ids;
+  }));
+  const dirtyTabIdSet = useMemo(() => new Set(dirtyTabIds), [dirtyTabIds]);
+
+  // 按切片订阅 explorer store，视图模型在这些切片上做 memo：
+  // 其他 session 的目录变动、touched 标记等都不会再触发全量重算。
+  const toggleDir = useExplorerStore((s) => s.toggleDir);
+  const expandedDirs = useExplorerStore(useShallow((s) => s.expandedDirsBySession[session.id] ?? EMPTY_PATHS));
+  const selectedPath = useExplorerStore((s) => s.selectedPathBySession[session.id] ?? null);
+  const selectedRevealMode = useExplorerStore((s) => s.selectModeBySession[session.id] ?? true);
+  const directoryGraph = useExplorerStore(useShallow((s) => ({
+    childrenBySessionPath: s.childrenBySessionPath,
+    loadingBySessionPath: s.loadingBySessionPath,
+    errorBySessionPath: s.errorBySessionPath,
+    nodesBySessionPath: s.nodesBySessionPath,
+    childPathsBySessionDir: s.childPathsBySessionDir,
+  })));
+  const touchedPaths = useExplorerStore(useShallow((s) => s.touchedPathsBySession[session.id] ?? EMPTY_PATHS));
+
+  const explorerView = useMemo(() => selectExplorerViewModel({
+    ...directoryGraph,
+    expandedDirsBySession: { [session.id]: expandedDirs },
+    selectedPathBySession: { [session.id]: selectedPath },
+    selectModeBySession: { [session.id]: selectedRevealMode },
+  }, session.id), [directoryGraph, expandedDirs, selectedPath, selectedRevealMode, session.id]);
+
+  const { rootLoading, rootError, hasRootSnapshot, rowCount, rowIndexByPath, visiblePathSet, visibleRows } = explorerView;
+  const expandedDirSet = useMemo(() => new Set(expandedDirs), [expandedDirs]);
   const touchedPathSet = useMemo(() => new Set(touchedPaths), [touchedPaths]);
   const treeScrollRef = useRef<HTMLDivElement | null>(null);
   const rowActiveBackground = theme === "dark" ? "rgba(255,255,255,0.05)" : "rgba(0,122,255,0.10)";
   const rowHoverBackground = "var(--ci-list-hover-bg)";
   const [hoveredNodeKey, setHoveredNodeKey] = useState<string | null>(null);
-  void rowIndexByPath;
-  void pathByRowIndex;
-  void visiblePathSet;
+
+  const handleHoverEnter = useCallback((key: string) => setHoveredNodeKey(key), []);
+  const handleHoverLeave = useCallback((key: string) => {
+    setHoveredNodeKey((current) => (current === key ? null : current));
+  }, []);
+
+  const handleToggleDir = useCallback((path: string) => {
+    const wasOpen = (useExplorerStore.getState().expandedDirsBySession[session.id] ?? EMPTY_PATHS).includes(path);
+    toggleDir(session.id, path);
+    if (!wasOpen && !useExplorerStore.getState().childrenBySessionPath[`${session.id}:${path}`]) {
+      void loadDirectory(session.id, path);
+    }
+  }, [session.id, toggleDir]);
+
+  const handleOpenFile = useCallback((path: string, preview: boolean) => {
+    openFile(session.id, path, preview, true, "explorer");
+  }, [session.id]);
 
   useEffect(() => {
     const explorerState = useExplorerStore.getState();
@@ -97,7 +248,7 @@ export function ExplorerPane({
   }, [expandedDirs, session.id]);
 
   const statusByPath = useMemo(() => {
-    const map = new Map<string, "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted">();
+    const map = new Map<string, FileStatusKind>();
     scmSnapshot.forEach((file) => {
       map.set(file.path, file.type === "added" ? "added" : file.type === "deleted" ? "deleted" : "modified");
     });
@@ -207,87 +358,24 @@ export function ExplorerPane({
           <div style={{ padding: "18px 12px", fontSize: 12, color: "var(--ci-text-dim)", lineHeight: 1.7 }}>
             {t("explorer.emptyDirectory")}
           </div>
-        ) : visibleRows.map((node) => {
-          if (node.type === "dir") {
-            const isOpen = expandedDirs.includes(node.path);
-            const isHovered = hoveredNodeKey === node.key;
-            const isTouched = touchedPathSet.has(node.path);
-            return (
-              <div key={node.key}>
-                <button
-                  onClick={() => {
-                    toggleDir(session.id, node.path);
-                    if (!isOpen && !useExplorerStore.getState().childrenBySessionPath[`${session.id}:${node.path}`]) {
-                      void loadDirectory(session.id, node.path);
-                    }
-                  }}
-                  onMouseEnter={() => setHoveredNodeKey(node.key)}
-                  onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
-                  style={{
-                    ...rowBaseStyle,
-                    padding: "0 10px",
-                    paddingInlineStart: 8 + node.depth * 14,
-                    background: isHovered ? rowHoverBackground : "transparent",
-                    color: isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
-                    cursor: "pointer",
-                    outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
-                    outlineOffset: -1,
-                  }}
-                >
-                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
-                    {isOpen ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
-                  </span>
-                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
-                    <Folder size={12} strokeWidth={1.8} />
-                  </span>
-                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
-                  {node.loading && <span style={{ marginInlineStart: "auto", fontSize: 10, color: "var(--ci-text-dim)" }}>…</span>}
-                </button>
-                {node.error && (
-                  <div style={{ paddingInlineStart: 34 + node.depth * 14, paddingTop: 2, paddingBottom: 6, fontSize: 10, color: "var(--ci-deleted-text)" }}>
-                    {node.error}
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          const isSelected = selectedPath === node.path;
-          const isHovered = hoveredNodeKey === node.key;
-          const buffer = buffersByTabId[`code:${session.id}:${node.path}`];
-          const kind = statusByPath.get(node.path) ?? null;
-          const isTouched = touchedPathSet.has(node.path);
-          return (
-            <button
-              key={node.key}
-              onClick={() => {
-                openFile(session.id, node.path, true, true, "explorer");
-              }}
-              onDoubleClick={() => openFile(session.id, node.path, false, true, "explorer")}
-              onMouseEnter={() => setHoveredNodeKey(node.key)}
-              onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
-              style={{
-                ...rowBaseStyle,
-                padding: "0 10px",
-                paddingInlineStart: 24 + node.depth * 14,
-                background: isSelected ? rowActiveBackground : isHovered ? rowHoverBackground : "transparent",
-                color: isSelected || isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
-                cursor: "pointer",
-                borderInlineStart: isSelected ? "1px solid var(--ci-accent)" : "1px solid transparent",
-                outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
-                outlineOffset: -1,
-              }}
-              title={node.path}
-            >
-              <FileStatusGlyph kind={kind} />
-              <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: isSelected ? "var(--ci-text)" : "var(--ci-text-dim)", flexShrink: 0 }}>
-                <FileCode2 size={11} strokeWidth={1.8} />
-              </span>
-              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
-              {buffer?.dirty && <span style={{ color: "var(--ci-accent)", fontSize: 10, marginInlineStart: "auto" }}>●</span>}
-            </button>
-          );
-        })}
+        ) : visibleRows.map((node) => (
+          <ExplorerRow
+            key={node.key}
+            node={node}
+            isOpen={node.type === "dir" && expandedDirSet.has(node.path)}
+            isSelected={node.type === "file" && selectedPath === node.path}
+            isHovered={hoveredNodeKey === node.key}
+            isTouched={touchedPathSet.has(node.path)}
+            isDirty={node.type === "file" && dirtyTabIdSet.has(`code:${session.id}:${node.path}`)}
+            statusKind={node.type === "file" ? statusByPath.get(node.path) ?? null : null}
+            activeBackground={rowActiveBackground}
+            hoverBackground={rowHoverBackground}
+            onToggleDir={handleToggleDir}
+            onOpenFile={handleOpenFile}
+            onHoverEnter={handleHoverEnter}
+            onHoverLeave={handleHoverLeave}
+          />
+        ))}
       </div>
     </div>
   );

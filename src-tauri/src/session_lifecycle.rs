@@ -125,10 +125,14 @@ pub(crate) fn resolve_session_ids(app: &AppHandle, routing: &SessionRoutingHint)
         if info.runner_type != routing.source.runner_type() {
             return Vec::new();
         }
-        if let Some(cwd) = &cwd {
-            if normalize_workdir(&info.workdir) != *cwd {
-                return Vec::new();
-            }
+        // 令牌只证明 payload 来自本次运行，并不证明它就是它所声称的那个 session：
+        // 同一次运行里的任意子进程都持有令牌。因此 cwd 交叉校验保持强制，
+        // payload 不带 cwd 时同样拒绝，而不是像此前那样直接放行。
+        let Some(cwd) = &cwd else {
+            return Vec::new();
+        };
+        if normalize_workdir(&info.workdir) != *cwd {
+            return Vec::new();
         }
         return vec![session_id.clone()];
     }

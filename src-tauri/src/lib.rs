@@ -1,6 +1,7 @@
 // ── 模块声明 ──────────────────────────────────────────────────────
 mod cli_detect;
 mod git;
+mod hook_auth;
 mod hooks;
 mod i18n;
 mod integration_control;

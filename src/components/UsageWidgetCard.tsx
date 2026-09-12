@@ -7,77 +7,84 @@ import { useSessionStore } from "../store/sessionStore";
 interface RunnerUsageSnapshot {
   runner_type: string;
   source: string;
-  auth_status: string | null;
-  usage_summary: string | null;
-  cost_summary: string | null;
-  raw_text: string | null;
-  last_refreshed_at: string;
-  error: string | null;
+  plan: string | null;
+  five_hour_used_percent: number | null;
+  five_hour_resets_at_ms: number | null;
+  seven_day_used_percent: number | null;
+  seven_day_resets_at_ms: number | null;
+  credits_balance: string | null;
+  credits_unlimited: boolean;
+  last_refreshed_at_ms: number;
+  error_code: string | null;
+  error_detail: string | null;
 }
 
-function parseUsageLine(text: string, label: string) {
-  const regex = new RegExp(`${label} usage: (\\d+(?:\\.\\d+)?)%\\n${label} reset: ([^\\n]+)`, "i");
-  const match = text.match(regex);
-  if (!match) return null;
-  const usedPercent = Number(match[1]);
+function emptySnapshot(runnerType: string, errorDetail: string): RunnerUsageSnapshot {
   return {
-    usedPercent,
-    leftPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
-    resetRaw: match[2],
+    runner_type: runnerType,
+    source: "unsupported",
+    plan: null,
+    five_hour_used_percent: null,
+    five_hour_resets_at_ms: null,
+    seven_day_used_percent: null,
+    seven_day_resets_at_ms: null,
+    credits_balance: null,
+    credits_unlimited: false,
+    last_refreshed_at_ms: Date.now(),
+    error_code: "requestFailed",
+    error_detail: errorDetail,
   };
 }
 
-function formatResetText(raw: string) {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return { top: raw, bottom: "" };
-  const date = new Date(value * 1000);
-  if (Number.isNaN(date.getTime())) return { top: raw, bottom: "" };
-  return {
-    top: formatTime(date),
-    bottom: formatDate(date),
-  };
+function formatReset(resetsAtMs: number | null, locale: string) {
+  if (resetsAtMs === null || !Number.isFinite(resetsAtMs) || resetsAtMs <= 0) {
+    return { top: "", bottom: "" };
+  }
+  const date = new Date(resetsAtMs);
+  if (Number.isNaN(date.getTime())) return { top: "", bottom: "" };
+  return { top: formatTime(date, locale), bottom: formatDate(date, locale) };
 }
 
-function FlatProgress({ label, leftPercent, reset }: { label: string; leftPercent: number; reset: { top: string; bottom: string } }) {
-  const clamped = Math.max(0, Math.min(100, leftPercent));
-  const tone = clamped <= 15 ? "var(--ci-red)" : clamped <= 40 ? "var(--ci-yellow-dark)" : "var(--ci-accent)";
+function FlatProgress({ label, usedPercent, reset }: {
+  label: string;
+  usedPercent: number;
+  reset: { top: string; bottom: string };
+}) {
+  const leftPercent = Math.max(0, Math.min(100, 100 - usedPercent));
+  const tone = leftPercent <= 15 ? "var(--ci-red)" : leftPercent <= 40 ? "var(--ci-yellow-dark)" : "var(--ci-accent)";
   return (
     <div style={{ display: "grid", gap: 6, padding: "8px 9px", borderRadius: 10, background: "var(--ci-surface)", border: "1px solid var(--ci-toolbar-border)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
         <span style={{ fontSize: 10, color: "var(--ci-text-dim)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label} limit</span>
-        <span style={{ fontSize: 11, color: tone, fontWeight: 600 }}>{clamped.toFixed(0)}% left</span>
+        <span style={{ fontSize: 11, color: tone, fontWeight: 600 }}>{leftPercent.toFixed(0)}% left</span>
       </div>
       <div style={{ height: 6, background: "var(--ci-btn-ghost-bg)", borderRadius: 999, overflow: "hidden" }}>
-        <div style={{ width: `${clamped}%`, height: "100%", background: tone, borderRadius: 999 }} />
+        <div style={{ width: `${leftPercent}%`, height: "100%", background: tone, borderRadius: 999 }} />
       </div>
-      <div style={{ display: "grid", gap: 1, fontSize: 10, color: "var(--ci-text-dim)", lineHeight: 1.3 }}>
-        <span>{reset.top}</span>
-        {reset.bottom && <span>{reset.bottom}</span>}
-      </div>
+      {(reset.top || reset.bottom) && (
+        <div style={{ display: "grid", gap: 1, fontSize: 10, color: "var(--ci-text-dim)", lineHeight: 1.3 }}>
+          <span>{reset.top}</span>
+          {reset.bottom && <span>{reset.bottom}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 export function UsageWidgetCard() {
-  const { t } = useAppI18n();
+  const { t, locale } = useAppI18n();
   const sessions = useSessionStore((s) => s.sessions);
   const expandedSessionId = useSessionStore((s) => s.expandedSessionId);
   const [loading, setLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<RunnerUsageSnapshot | null>(null);
+  // Drives the relative "updated Xm ago" label without refetching.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const refreshAbortRef = useRef(false);
 
   const runnerType = useMemo<RunnerType>(() => {
     const session = sessions.find((item) => item.id === expandedSessionId) ?? null;
     return session?.runner.type ?? "claude-code";
   }, [expandedSessionId, sessions]);
-
-  const parsedWindows = useMemo(() => {
-    if (!snapshot?.usage_summary) return { fiveHour: null, weekly: null };
-    return {
-      fiveHour: parseUsageLine(snapshot.usage_summary, "5h"),
-      weekly: parseUsageLine(snapshot.usage_summary, "7d"),
-    };
-  }, [snapshot?.usage_summary]);
 
   const handleRefresh = async () => {
     if (loading) return;
@@ -87,18 +94,11 @@ export function UsageWidgetCard() {
       const next = await invoke<RunnerUsageSnapshot>("refresh_runner_usage", { runnerType: requestRunner });
       if (refreshAbortRef.current || requestRunner !== runnerType) return;
       setSnapshot(next);
+      setNowMs(Date.now());
     } catch (error) {
       if (refreshAbortRef.current || requestRunner !== runnerType) return;
-      setSnapshot({
-        runner_type: requestRunner,
-        source: "unsupported",
-        auth_status: null,
-        usage_summary: null,
-        cost_summary: null,
-        raw_text: null,
-        last_refreshed_at: String(Date.now()),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      setSnapshot(emptySnapshot(requestRunner, error instanceof Error ? error.message : String(error)));
+      setNowMs(Date.now());
     } finally {
       if (!refreshAbortRef.current) {
         setLoading(false);
@@ -120,6 +120,25 @@ export function UsageWidgetCard() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runnerType]);
+
+  useEffect(() => {
+    const tick = window.setInterval(() => setNowMs(Date.now()), 30 * 1000);
+    return () => window.clearInterval(tick);
+  }, []);
+
+  const updatedLabel = useMemo(() => {
+    if (!snapshot?.last_refreshed_at_ms) return "";
+    const minutes = Math.max(0, Math.floor((nowMs - snapshot.last_refreshed_at_ms) / 60000));
+    return minutes < 1 ? t("usage.updatedJustNow") : t("usage.updatedAgo", { minutes });
+  }, [nowMs, snapshot?.last_refreshed_at_ms, t]);
+
+  const errorText = snapshot?.error_code
+    ? t(`usage.error.${snapshot.error_code}`, { defaultValue: t("usage.error.unknown") })
+    : null;
+
+  const hasWindows =
+    snapshot?.five_hour_used_percent !== null && snapshot?.five_hour_used_percent !== undefined
+    || snapshot?.seven_day_used_percent !== null && snapshot?.seven_day_used_percent !== undefined;
 
   return (
     <div style={{
@@ -155,18 +174,36 @@ export function UsageWidgetCard() {
       </div>
 
       <div style={{ display: "grid", gap: 8, flex: 1, minHeight: 0, overflowY: "auto" }}>
-        {snapshot?.error && (
-          <div style={{ fontSize: 12, color: "var(--ci-red)", lineHeight: 1.5, padding: "8px 9px", borderRadius: 10, background: "var(--ci-deleted-bg)", border: "1px solid var(--ci-toolbar-border)" }}>
-            {snapshot.error}
+        {errorText && (
+          <div style={{ display: "grid", gap: 3, fontSize: 12, color: "var(--ci-red)", lineHeight: 1.5, padding: "8px 9px", borderRadius: 10, background: "var(--ci-deleted-bg)", border: "1px solid var(--ci-toolbar-border)" }}>
+            <span>{errorText}</span>
+            {snapshot?.error_detail && (
+              <span style={{ fontSize: 10, color: "var(--ci-text-dim)" }}>{snapshot.error_detail}</span>
+            )}
           </div>
         )}
 
-        {parsedWindows.fiveHour && (
-          <FlatProgress label="5h" leftPercent={parsedWindows.fiveHour.leftPercent} reset={formatResetText(parsedWindows.fiveHour.resetRaw)} />
+        {snapshot?.five_hour_used_percent !== null && snapshot?.five_hour_used_percent !== undefined && (
+          <FlatProgress
+            label="5h"
+            usedPercent={snapshot.five_hour_used_percent}
+            reset={formatReset(snapshot.five_hour_resets_at_ms, locale)}
+          />
         )}
 
-        {parsedWindows.weekly && (
-          <FlatProgress label="7d" leftPercent={parsedWindows.weekly.leftPercent} reset={formatResetText(parsedWindows.weekly.resetRaw)} />
+        {snapshot?.seven_day_used_percent !== null && snapshot?.seven_day_used_percent !== undefined && (
+          <FlatProgress
+            label="7d"
+            usedPercent={snapshot.seven_day_used_percent}
+            reset={formatReset(snapshot.seven_day_resets_at_ms, locale)}
+          />
+        )}
+
+        {snapshot?.credits_balance && (
+          <div style={{ fontSize: 11, color: "var(--ci-text-dim)", padding: "0 2px" }}>
+            {t("usage.credits", { value: snapshot.credits_balance })}
+            {snapshot.credits_unlimited ? ` · ${t("usage.creditsUnlimited")}` : ""}
+          </div>
         )}
 
         {!snapshot && !loading && (
@@ -175,6 +212,12 @@ export function UsageWidgetCard() {
           </div>
         )}
       </div>
+
+      {snapshot && (hasWindows || errorText) && (
+        <div style={{ fontSize: 10, color: "var(--ci-text-dim)", padding: "0 2px", flexShrink: 0 }}>
+          {updatedLabel}
+        </div>
+      )}
     </div>
   );
 }

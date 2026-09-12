@@ -1002,37 +1002,89 @@ pub fn get_notifications_and_hooks_status(
     })
 }
 
-/// 将目录写入 Claude settings.json 的 trustedDirectories
+/// Claude Code 用正斜杠、保留大小写的绝对路径作为 `projects` 的 key。
+fn normalize_trust_path(path: &str) -> String {
+    let mut normalized = path.trim().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        // 保留 `C:/` 这类盘符根路径
+        if normalized.len() == 3 && normalized.as_bytes()[1] == b':' {
+            break;
+        }
+        normalized.pop();
+    }
+    normalized
+}
+
+/// 把工作区标记为“已信任”，写入 Claude CLI 真正读取的位置。
+///
+/// Verified against Claude Code 2.1.269 on 2026-09-12: the shipped `claude.exe`
+/// contains `hasTrustDialogAccepted` (24 occurrences) and **zero** occurrences of
+/// `trustedDirectories`, and every directory the CLI has actually been run in is
+/// recorded in `~/.claude.json` under `projects.<path>.hasTrustDialogAccepted`.
+/// The previous implementation appended to a `trustedDirectories` array in
+/// `~/.claude/settings.json`, which the CLI ignores entirely.
+///
+/// `~/.claude.json` is owned by the CLI and can be large, so this rewrites the file
+/// only when the flag is actually missing. App startup calls this for every
+/// workspace on every launch, and after the first run those calls are now no-ops.
 #[tauri::command]
 pub fn trust_workspace(path: String) -> Result<(), String> {
-    let settings_path = resolve_provider_file_path("claude-code", "", "settings.json")
-        .ok_or("无法解析 Claude Code 配置目录")?;
+    let normalized = normalize_trust_path(&path);
+    if normalized.is_empty() {
+        return Err("工作区路径为空".to_string());
+    }
 
-    let content = if settings_path.exists() {
-        fs::read_to_string(&settings_path).map_err(|e| e.to_string())?
+    let config_path = home_dir()
+        .ok_or("无法解析 Claude Code 配置目录")?
+        .join(".claude.json");
+
+    let content = if config_path.exists() {
+        fs::read_to_string(&config_path).map_err(|e| e.to_string())?
     } else {
         "{}".to_string()
     };
 
     let mut json: Value = serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
 
-    let trusted = json
-        .as_object_mut()
-        .ok_or("settings.json 格式错误")?
-        .entry("trustedDirectories")
-        .or_insert(serde_json::json!([]));
+    {
+        let root = json.as_object_mut().ok_or("~/.claude.json 格式错误")?;
 
-    if let Value::Array(arr) = trusted {
-        if !arr.iter().any(|v| v.as_str() == Some(&path)) {
-            arr.push(Value::String(path));
+        let projects = root
+            .entry("projects".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !projects.is_object() {
+            *projects = serde_json::json!({});
         }
+        let projects = projects
+            .as_object_mut()
+            .ok_or("~/.claude.json projects 格式错误")?;
+
+        let project = projects
+            .entry(normalized)
+            .or_insert_with(|| serde_json::json!({}));
+        if !project.is_object() {
+            *project = serde_json::json!({});
+        }
+        let project = project
+            .as_object_mut()
+            .ok_or("~/.claude.json project 格式错误")?;
+
+        if project
+            .get("hasTrustDialogAccepted")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            return Ok(());
+        }
+
+        project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
     }
 
     let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
-    if let Some(parent) = settings_path.parent() {
+    if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&settings_path, out).map_err(|e| e.to_string())?;
+    fs::write(&config_path, out).map_err(|e| e.to_string())?;
 
     Ok(())
 }

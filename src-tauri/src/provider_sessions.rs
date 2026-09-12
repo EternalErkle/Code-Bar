@@ -69,6 +69,12 @@ fn extract_claude_session_id(json: &Value) -> Option<String> {
 fn extract_codex_session_id(json: &Value) -> Option<String> {
     // Codex 的 cwd 只能定位到“目录”，不能唯一定位到“当前新建的 session”。
     // 新建多个会话或重复进入同目录时，按 cwd 回扫历史记录会把旧 session 误绑到新会话上。
+    //
+    // On Windows, Codex hooks are disabled, so the only structured signal we get is the
+    // `notify` payload. That payload identifies the conversation with a thread id rather
+    // than a session id. We could not verify the exact spelling against a live Codex
+    // install (no Codex CLI on the build machine), so every plausible spelling is accepted
+    // defensively; the first one present wins.
     extract_string_by_paths(
         json,
         &[
@@ -78,6 +84,19 @@ fn extract_codex_session_id(json: &Value) -> Option<String> {
             &["payload", "session_id"],
             &["payload", "sessionId"],
             &["payload", "session", "id"],
+            // Unverified: Codex notify thread identifiers.
+            &["thread_id"],
+            &["threadId"],
+            &["thread-id"],
+            &["thread", "id"],
+            &["conversation_id"],
+            &["conversationId"],
+            &["payload", "thread_id"],
+            &["payload", "threadId"],
+            &["payload", "thread-id"],
+            &["payload", "thread", "id"],
+            &["payload", "conversation_id"],
+            &["payload", "conversationId"],
         ],
     )
 }

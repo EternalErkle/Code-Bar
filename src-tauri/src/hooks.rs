@@ -1208,6 +1208,13 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
         },
         HookSource::Codex => match event_name {
             "" => {
+                // Codex notify payload. On Windows this is the only structured signal we
+                // get, because Codex disables hooks there and hook_specs returns an empty
+                // list. Without binding here the resume path falls back to the cwd-based
+                // history scan, which provider_sessions documents as unreliable when
+                // several sessions share a directory. emit_provider_session_bound is a
+                // no-op when the payload carries no recognisable identifier.
+                emit_provider_session_bound(app, &routing, json);
                 if let Some((title, message, notification_type)) = codex_notify_message(locale, json) {
                     emit_session_lifecycle(
                         app,

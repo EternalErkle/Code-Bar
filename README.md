@@ -15,24 +15,24 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/For-Tr/Code-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/For-Tr/Code-Bar?style=flat-square&label=release&color=blue" alt="Latest Release"></a>
-  <a href="https://github.com/For-Tr/Code-Bar/stargazers"><img src="https://img.shields.io/github/stars/For-Tr/Code-Bar?style=flat-square&color=yellow" alt="Stars"></a>
-  <a href="https://github.com/For-Tr/Code-Bar/releases"><img src="https://img.shields.io/github/downloads/For-Tr/Code-Bar/total?style=flat-square&label=downloads" alt="Downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/For-Tr/Code-Bar?style=flat-square" alt="License"></a>
+  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/EternalErkle/Code-Bar?style=flat-square&label=release&color=blue" alt="Latest Release"></a>
+  <a href="https://github.com/EternalErkle/Code-Bar/stargazers"><img src="https://img.shields.io/github/stars/EternalErkle/Code-Bar?style=flat-square&color=yellow" alt="Stars"></a>
+  <a href="https://github.com/EternalErkle/Code-Bar/releases"><img src="https://img.shields.io/github/downloads/EternalErkle/Code-Bar/total?style=flat-square&label=downloads" alt="Downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/EternalErkle/Code-Bar?style=flat-square" alt="License"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-windows-x64.msi">Windows</a> ·
-  <a href="https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg">macOS Apple Silicon</a> ·
-  <a href="https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg">macOS Intel</a>
+  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-windows-x64.msi">Windows</a> ·
+  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg">macOS Apple Silicon</a> ·
+  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg">macOS Intel</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/For-Tr/Code-Bar/releases/latest">Download</a> ·
+  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
   <a href="#build-from-source">Build from Source</a> ·
-  <a href="https://github.com/For-Tr/Code-Bar/stargazers">Star</a>
+  <a href="https://github.com/EternalErkle/Code-Bar/stargazers">Star</a>
 </p>
 
 <p align="center">
@@ -73,9 +73,9 @@ Code Bar gives each task its own session and git worktree so you can run paralle
 
 ### Step 1: Download the app
 
-- [Windows x64 MSI](https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-windows-x64.msi)
-- [macOS Apple Silicon DMG](https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg)
-- [macOS Intel DMG](https://github.com/For-Tr/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg)
+- [Windows x64 MSI](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-windows-x64.msi)
+- [macOS Apple Silicon DMG](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg)
+- [macOS Intel DMG](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg)
 
 ### Step 2: Install Claude Code or Codex
 
@@ -161,7 +161,7 @@ Open a repo, create a session, and let Code Bar keep that task isolated in its o
 ### Install
 
 ```bash
-git clone https://github.com/For-Tr/code-bar.git
+git clone https://github.com/EternalErkle/code-bar.git
 cd code-bar
 pnpm install
 ```
@@ -208,4 +208,4 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Author
 
-[@For-Tr](https://github.com/For-Tr)
+[@](https://github.com/EternalErkle)

@@ -130,7 +130,13 @@ export default function App() {
         source: "console.error",
         message: args.map((value) => {
           if (value instanceof Error) return value.message;
-          return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+          if (typeof value === "string") return value;
+          try {
+            return JSON.stringify(value, null, 2) ?? String(value);
+          } catch {
+            // 循环引用等无法序列化的对象不能让日志记录本身抛错
+            return String(value);
+          }
         }).join(" "),
         stack: args.find((value) => value instanceof Error) instanceof Error ? (args.find((value) => value instanceof Error) as Error).stack ?? null : null,
         detail: null,
@@ -499,26 +505,6 @@ export default function App() {
     });
   }, []);
 
-  // ── 启动时加载保存的 API Key ──────────────────────────────
-  useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
-
-    (["anthropic", "openai"] as const).forEach((provider) => {
-      invoke<string>("load_api_key", { provider })
-        .then((key) => {
-          if (key) {
-            useSettingsStore.setState((s) => ({
-              settings: {
-                ...s.settings,
-                apiKeys: { ...s.settings.apiKeys, [provider]: key },
-              },
-            }));
-          }
-        })
-        .catch(() => {});
-    });
-  }, []);
-
   // ── 启动时恢复缺失 session，并为已有旧 session 回填 provider resume 绑定 ──
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -836,7 +822,7 @@ export default function App() {
         boxSizing: "border-box",
         background: "transparent",
       }}>
-        {frontendErrorLogs.length > 0 && (
+        {import.meta.env.DEV && frontendErrorLogs.length > 0 && (
           <div style={{
             position: "fixed",
             right: 12,

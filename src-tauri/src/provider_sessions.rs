@@ -98,6 +98,16 @@ pub fn emit_provider_session_bound(app: &AppHandle, routing: &SessionRoutingHint
     let Some(provider_session_id) = resolve_provider_session_id(routing, json) else {
         return;
     };
+    // provider session id 会作为 `--resume <id>` 进入命令行（Windows 上可能经由 cmd.exe），
+    // 只接受保守字符集，避免被注入元字符。
+    if provider_session_id.is_empty()
+        || !provider_session_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        eprintln!("[provider-session] 丢弃非法 provider_session_id: {provider_session_id}");
+        return;
+    }
     let runner_type = routing.source.runner_type();
     for session_id in session_ids {
         eprintln!(

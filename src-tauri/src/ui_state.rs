@@ -282,16 +282,7 @@ fn normalize_deleted_ui_state(mut state: DeletedUiState) -> DeletedUiState {
 }
 
 fn ui_state_file(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
-    let sanitized = key
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
+    let sanitized = crate::util::sanitize_fs_component(key);
 
     app.path()
         .app_data_dir()

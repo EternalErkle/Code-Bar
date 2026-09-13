@@ -140,7 +140,7 @@ pub async fn git_worktree_remove(
         if delete_branch && !branch.is_empty() {
             let _ = background_command("git")
                 .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
+                .args(["branch", "-D", "--", &branch])
                 .output();
         }
         Ok(())
@@ -241,7 +241,7 @@ pub async fn git_worktree_merge(
         if !branch.is_empty() {
             let _ = background_command("git")
                 .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
+                .args(["branch", "-D", "--", &branch])
                 .output();
         }
 
@@ -357,7 +357,7 @@ pub async fn teardown_session_worktree(
         if !branch.is_empty() {
             let _ = background_command("git")
                 .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
+                .args(["branch", "-D", "--", &branch])
                 .output();
         }
         Ok(())
@@ -421,7 +421,7 @@ pub async fn prune_orphan_worktrees(
                 if !b.is_empty() {
                     let _ = background_command("git")
                         .current_dir(&expanded_workdir)
-                        .args(["branch", "-D", b])
+                        .args(["branch", "-D", "--", b])
                         .output();
                 }
             }

@@ -38,7 +38,7 @@ fn hook_bridge_command(source: HookSource) -> Result<String, String> {
     let source_name = source.label();
     let socket_path = source.socket_path();
     Ok(format!(
-        "/usr/bin/python3 -c 'import json, os, socket, sys; payload=json.load(sys.stdin); sid=os.environ.get(\"CODE_BAR_SESSION_ID\"); runner=os.environ.get(\"CODE_BAR_RUNNER_TYPE\"); payload[\"code_bar_source\"]=\"{source_name}\"; payload[\"code_bar_session_id\"]=sid if sid else payload.get(\"code_bar_session_id\"); payload[\"code_bar_runner_type\"]=runner if runner else payload.get(\"code_bar_runner_type\"); sock=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); sock.connect(\"{socket_path}\"); sock.sendall(json.dumps(payload).encode(\"utf-8\")); sock.close()' >/dev/null 2>&1 || true"
+        "/usr/bin/python3 -c 'import json, os, socket, sys; payload=json.load(sys.stdin); sid=os.environ.get(\"CODE_BAR_SESSION_ID\"); runner=os.environ.get(\"CODE_BAR_RUNNER_TYPE\"); tok=os.environ.get(\"CODE_BAR_HOOK_TOKEN\"); payload[\"code_bar_source\"]=\"{source_name}\"; payload[\"code_bar_session_id\"]=sid if sid else payload.get(\"code_bar_session_id\"); payload[\"code_bar_runner_type\"]=runner if runner else payload.get(\"code_bar_runner_type\"); payload[\"code_bar_hook_token\"]=tok if tok else \"\"; sock=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); sock.connect(\"{socket_path}\"); sock.sendall(json.dumps(payload).encode(\"utf-8\")); sock.close()' >/dev/null 2>&1 || true"
     ))
 }
 
@@ -75,6 +75,9 @@ try {
   }
   if ($env:CODE_BAR_RUNNER_TYPE) {
     $payload | Add-Member -NotePropertyName code_bar_runner_type -NotePropertyValue $env:CODE_BAR_RUNNER_TYPE -Force
+  }
+  if ($env:CODE_BAR_HOOK_TOKEN) {
+    $payload | Add-Member -NotePropertyName code_bar_hook_token -NotePropertyValue $env:CODE_BAR_HOOK_TOKEN -Force
   }
   $payload | Add-Member -NotePropertyName code_bar_source -NotePropertyValue $Source -Force
 
@@ -1318,6 +1321,21 @@ fn codex_notify_message(locale: crate::i18n::AppLocale, json: &Value) -> Option<
 }
 
 fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value) {
+    // 鉴权闸口：两种传输（Unix Socket / 回环 TCP）都汇聚到这里，
+    // 因此校验放在这一处即可覆盖全部入口，不存在绕过路径。
+    // 缺失 / 为空 / 不匹配，以及本次运行没能生成令牌时，一律丢弃。
+    // 注意：以下任何分支都不得把令牌本身写进日志。
+    if !crate::hook_auth::verify(
+        json.get(crate::hook_auth::HOOK_TOKEN_FIELD)
+            .and_then(|v| v.as_str()),
+    ) {
+        eprintln!(
+            "[hooks:{}] rejected: missing or invalid auth token",
+            source.label()
+        );
+        return;
+    }
+
     let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     if !crate::integration_control::notifications_and_hooks_enabled(app) {
         eprintln!(

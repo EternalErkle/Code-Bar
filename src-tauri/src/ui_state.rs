@@ -664,6 +664,59 @@ impl ClaudeHistoryIndex {
 
         best
     }
+
+    /// Look up the transcript for one specific conversation id.
+    ///
+    /// Used when a session already has a stored binding: identity comes from the
+    /// binding, and this only supplies the title and timestamp. Returning `None`
+    /// means the transcript file is missing, not that the binding is wrong.
+    fn hint_for_provider_session(
+        &self,
+        locale: crate::i18n::AppLocale,
+        session_id: &str,
+        provider_session_id: &str,
+    ) -> Option<RecoveryHint> {
+        let provider_session_id = provider_session_id.trim();
+        if provider_session_id.is_empty() {
+            return None;
+        }
+        let suffix = format!("session-{session_id}");
+
+        for (name, path) in &self.project_dirs {
+            if !claude_dir_matches_session(name, &suffix) {
+                continue;
+            }
+            let file_path = path.join(format!("{provider_session_id}.jsonl"));
+            if !file_path.is_file() {
+                continue;
+            }
+
+            let mut first_task = String::new();
+            if let Ok(handle) = fs::File::open(&file_path) {
+                for line in BufReader::new(handle).lines().map_while(Result::ok) {
+                    let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    if let Some(text) = extract_claude_first_task(&json) {
+                        first_task = text;
+                        break;
+                    }
+                }
+            }
+            if first_task.trim().is_empty() {
+                first_task = crate::i18n::translate(locale, "session.continue_session", &[]);
+            }
+
+            return Some(RecoveryHint {
+                runner_type: "claude-code".to_string(),
+                provider_session_id: provider_session_id.to_string(),
+                current_task: first_task,
+                modified_at_ms: modified_millis(&file_path),
+            });
+        }
+
+        None
+    }
 }
 
 fn is_codex_wrapper_text(text: &str) -> bool {
@@ -831,7 +884,19 @@ fn resolve_recovery_hint(
     let worktree_key = normalize_expanded_path(&worktree_path.to_string_lossy());
     if let Some(binding) = recovery_bindings.get(session_id) {
         if binding.runner_type == "claude-code" {
-            let mut hint = claude_index.latest_hint(locale, session_id)?;
+            // The binding already records which conversation this session owns.
+            // Scan the history dir only to enrich the title/timestamp; never let
+            // it decide identity, and never drop the binding when no transcript
+            // file is found. Doing either resumes an unrelated conversation.
+            let mut hint = claude_index
+                .hint_for_provider_session(locale, session_id, &binding.provider_session_id)
+                .or_else(|| claude_index.latest_hint(locale, session_id))
+                .unwrap_or_else(|| RecoveryHint {
+                    runner_type: "claude-code".to_string(),
+                    provider_session_id: binding.provider_session_id.clone(),
+                    current_task: crate::i18n::translate(locale, "session.continue_session", &[]),
+                    modified_at_ms: binding.updated_at_ms,
+                });
             hint.provider_session_id = binding.provider_session_id.clone();
             hint.modified_at_ms = hint.modified_at_ms.max(binding.updated_at_ms);
             return Some(hint);

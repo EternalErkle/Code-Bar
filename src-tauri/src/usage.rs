@@ -8,6 +8,39 @@ use crate::util::background_command;
 /// 每次调用都 build 一个 client 会启动一条新的运行时线程，这里只构建一次。
 static HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
 
+/// 上游 429 后的冷却截止时间（epoch ms）+ 最近一次成功的快照。
+///
+/// 卡片每次挂载都会立即刷新一次，重启和切换 runner 都会重新挂载；再叠加 3 分钟
+/// 轮询，短时间内很容易把这个端点打到限流。冷却期内直接复用上次快照，既不再发
+/// 请求，也不会让卡片退化成报错。
+static CLAUDE_COOLDOWN_UNTIL_MS: std::sync::Mutex<i64> = std::sync::Mutex::new(0);
+static CLAUDE_LAST_SNAPSHOT: std::sync::Mutex<Option<RunnerUsageSnapshot>> =
+    std::sync::Mutex::new(None);
+
+fn set_claude_cooldown_until(until_ms: i64) {
+    if let Ok(mut guard) = CLAUDE_COOLDOWN_UNTIL_MS.lock() {
+        *guard = until_ms;
+    }
+}
+
+fn claude_cooldown_remaining_ms() -> i64 {
+    let until = CLAUDE_COOLDOWN_UNTIL_MS
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(0);
+    (until - now_ms()).max(0)
+}
+
+fn remember_claude_snapshot(snapshot: &RunnerUsageSnapshot) {
+    if let Ok(mut guard) = CLAUDE_LAST_SNAPSHOT.lock() {
+        *guard = Some(snapshot.clone());
+    }
+}
+
+fn last_claude_snapshot() -> Option<RunnerUsageSnapshot> {
+    CLAUDE_LAST_SNAPSHOT.lock().ok().and_then(|g| g.clone())
+}
+
 fn http_client() -> Result<&'static reqwest::blocking::Client, &'static str> {
     HTTP_CLIENT
         .get_or_init(|| {
@@ -343,7 +376,24 @@ fn fetch_claude_usage_via_oauth(token: &str) -> RunnerUsageSnapshot {
 
     if !response.status().is_success() {
         let status = response.status();
-        let code = if status.as_u16() == 401 { "unauthorized" } else { "requestFailed" };
+        let code = match status.as_u16() {
+            401 => "unauthorized",
+            429 => "rateLimited",
+            _ => "requestFailed",
+        };
+        // 429 时记录冷却截止时间：在此之前的刷新直接复用上一次快照，不再打这个
+        // 端点。否则每次重试都会把限流窗口继续往后续，用量卡片长期显示报错。
+        if status.as_u16() == 429 {
+            let retry_after_secs = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(1, 3600) as i64
+                * 1000;
+            set_claude_cooldown_until(now_ms().saturating_add(retry_after_secs));
+        }
         return RunnerUsageSnapshot::failure("claude-code", code, Some(status.to_string()));
     }
 
@@ -441,8 +491,25 @@ fn fetch_claude_usage_via_headers(api_key: &str) -> RunnerUsageSnapshot {
 }
 
 fn fetch_claude_usage() -> RunnerUsageSnapshot {
+    // 还在 429 冷却期内就别再打上游了，直接复用上一次的快照。
+    let cooldown_ms = claude_cooldown_remaining_ms();
+    if cooldown_ms > 0 {
+        if let Some(cached) = last_claude_snapshot() {
+            return cached;
+        }
+        return RunnerUsageSnapshot::failure(
+            "claude-code",
+            "rateLimited",
+            Some(format!("retry in {}s", cooldown_ms / 1000)),
+        );
+    }
+
     if let Some(token) = read_claude_oauth_token() {
-        return fetch_claude_usage_via_oauth(&token);
+        let snapshot = fetch_claude_usage_via_oauth(&token);
+        if snapshot.error_code.is_none() {
+            remember_claude_snapshot(&snapshot);
+        }
+        return snapshot;
     }
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|v| !v.trim().is_empty());

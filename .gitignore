@@ -29,7 +29,7 @@ dist-ssr
 # untracked here gets scanned as if it were app source.
 .claude/
 .virtualcontext/
-.impeccable/
-.serena/
-.token-optimizer/
+.impeccable
+.serena
+.token-optimizer
 *.stackdump

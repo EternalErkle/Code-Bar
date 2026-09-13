@@ -161,7 +161,7 @@ Open a repo, create a session, and let Code Bar keep that task isolated in its o
 ### Install
 
 ```bash
-git clone https://github.com//code-bar.git
+git clone https://github.com/EternalErkle/code-bar.git
 cd code-bar
 pnpm install
 ```

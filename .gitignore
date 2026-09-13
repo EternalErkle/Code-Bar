@@ -22,3 +22,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local agent/tool state. Not part of the project.
+# These must stay ignored: Tailwind v4 auto-discovers source files by walking
+# the project root and skipping only what git ignores, so anything left
+# untracked here gets scanned as if it were app source.
+.claude/
+.virtualcontext/
+.impeccable/
+.serena/
+.token-optimizer/
+*.stackdump

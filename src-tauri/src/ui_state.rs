@@ -511,6 +511,63 @@ struct ClaudeHistoryIndex {
     project_dirs: Vec<(String, PathBuf)>,
 }
 
+/// True when `name` ends with `suffix` at a path-segment boundary.
+///
+/// Claude encodes project directories by replacing path separators with `-`, so
+/// a worktree at `.../session-1` becomes `...-session-1`. Matching with a plain
+/// `ends_with` also accepts `...-session-11`, binding a session to an unrelated
+/// conversation.
+fn claude_dir_matches_session(name: &str, suffix: &str) -> bool {
+    let Some(head) = name.strip_suffix(suffix) else {
+        return false;
+    };
+    // Either the whole name is the suffix, or the character before it is the
+    // separator Claude uses for path components.
+    head.is_empty() || head.ends_with('-')
+}
+
+#[cfg(test)]
+mod claude_dir_match_tests {
+    use super::claude_dir_matches_session;
+
+    #[test]
+    fn matches_exact_session_segment() {
+        assert!(claude_dir_matches_session(
+            "C--Users-erelg-code-bar-worktrees-session-1",
+            "session-1"
+        ));
+    }
+
+    #[test]
+    fn rejects_longer_session_id_with_shared_prefix() {
+        // The regression: session 1 must not bind to session 11 or 21.
+        assert!(!claude_dir_matches_session(
+            "C--Users-erelg-code-bar-worktrees-session-11",
+            "session-1"
+        ));
+        assert!(!claude_dir_matches_session(
+            "C--Users-erelg-code-bar-worktrees-session-21",
+            "session-1"
+        ));
+    }
+
+    #[test]
+    fn rejects_unrelated_directory() {
+        assert!(!claude_dir_matches_session(
+            "C--Users-erelg-Documents-GitHub-Code-Bar",
+            "session-1"
+        ));
+    }
+
+    #[test]
+    fn matches_multi_digit_session() {
+        assert!(claude_dir_matches_session(
+            "C--Users-erelg-worktrees-session-11",
+            "session-11"
+        ));
+    }
+}
+
 impl ClaudeHistoryIndex {
     fn load() -> Self {
         let mut project_dirs = Vec::new();
@@ -544,7 +601,11 @@ impl ClaudeHistoryIndex {
         let mut best: Option<RecoveryHint> = None;
 
         for (name, path) in &self.project_dirs {
-            if !name.ends_with(&suffix) {
+            // Must match a whole trailing path segment. A bare `ends_with` lets
+            // session 1 match `...session-11` / `...session-21`, so after a
+            // restart the newest of those unrelated transcripts wins and the
+            // session resumes someone else's conversation.
+            if !claude_dir_matches_session(name, &suffix) {
                 continue;
             }
 

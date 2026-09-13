@@ -154,6 +154,11 @@ function send(raw) {
   if (process.env.CODE_BAR_RUNNER_TYPE) {
     payload.code_bar_runner_type = process.env.CODE_BAR_RUNNER_TYPE;
   }
+  // 鉴权令牌必须转发，否则监听端会拒绝该请求（fail closed），
+  // 会话绑定事件丢失，下次进入会话时无法 resume。
+  if (process.env.CODE_BAR_HOOK_TOKEN) {
+    payload.code_bar_hook_token = process.env.CODE_BAR_HOOK_TOKEN;
+  }
   payload.code_bar_source = source;
 
   const socket = net.connect(port, "127.0.0.1", function () {

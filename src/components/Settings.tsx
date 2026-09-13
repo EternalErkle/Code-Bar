@@ -86,10 +86,11 @@ function Toggle({
 
 function AppearanceTab() {
   const { t } = useAppI18n();
-  const { settings, patchSettings } = useSettingsStore();
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
+  const theme = useSettingsStore((s) => s.settings.theme);
+  const ptyFontSize = useSettingsStore((s) => s.settings.ptyFontSize);
 
   type ThemeOption = ThemeMode;
-  const ptyFontSize = settings.ptyFontSize;
 
   const themeOptions: {
     value: ThemeOption;
@@ -152,7 +153,7 @@ function AppearanceTab() {
           }}
         >
           {themeOptions.map((opt) => {
-            const active = settings.theme === opt.value;
+            const active = theme === opt.value;
             return (
               <button
                 key={opt.value}
@@ -328,7 +329,8 @@ function AppearanceTab() {
 
 function ComponentsTab() {
   const { t } = useAppI18n();
-  const { settings, patchSettings } = useSettingsStore();
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
+  const splitWidgetCanvas = useSettingsStore((s) => s.settings.splitWidgetCanvas);
 
   const groups: {
     title: string;
@@ -352,7 +354,7 @@ function ComponentsTab() {
   ];
 
   const isTypeVisible = (type: SplitWidgetCanvasItem["type"]) =>
-    settings.splitWidgetCanvas.items.some((item) => item.type === type && item.visible !== false);
+    splitWidgetCanvas.items.some((item) => item.type === type && item.visible !== false);
 
   const updateTypeVisibility = (type: SplitWidgetCanvasItem["type"], visible: boolean) => {
     const updateItems = (items: SplitWidgetCanvasItem[] | null | undefined) => {
@@ -362,9 +364,9 @@ function ComponentsTab() {
 
     patchSettings({
       splitWidgetCanvas: {
-        ...settings.splitWidgetCanvas,
-        items: updateItems(settings.splitWidgetCanvas.items) ?? [],
-        filledSnapshot: updateItems(settings.splitWidgetCanvas.filledSnapshot),
+        ...splitWidgetCanvas,
+        items: updateItems(splitWidgetCanvas.items) ?? [],
+        filledSnapshot: updateItems(splitWidgetCanvas.filledSnapshot),
       },
     });
   };
@@ -397,7 +399,8 @@ function ComponentsTab() {
 
 function SystemTab() {
   const { t } = useAppI18n();
-  const { settings, patchSettings } = useSettingsStore();
+  const patchSettings = useSettingsStore((s) => s.patchSettings);
+  const locale = useSettingsStore((s) => s.settings.locale);
   const [integrationBusy, setIntegrationBusy] = useState(false);
   const [integrationStatus, setIntegrationStatus] = useState<{ enabled: boolean } | null>(null);
 
@@ -447,7 +450,7 @@ function SystemTab() {
           <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6 }}>{t("settings.locale.description")}</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {localeOptions.map((option) => {
-              const active = settings.locale === option.value;
+              const active = locale === option.value;
               return (
                 <button
                   key={option.value}
@@ -501,7 +504,10 @@ function resolveVisibleSettingsTab(tab: string): VisibleSettingsTab {
 
 export default function Settings() {
   const { t } = useAppI18n();
-  const { settingsOpen, closeSettings, activeTab, setTab } = useSettingsStore();
+  const settingsOpen = useSettingsStore((s) => s.settingsOpen);
+  const closeSettings = useSettingsStore((s) => s.closeSettings);
+  const activeTab = useSettingsStore((s) => s.activeTab);
+  const setTab = useSettingsStore((s) => s.setTab);
   const isGlass = useSettingsStore((s) => isGlassTheme(s.settings.theme));
   const textShadow = isGlass ? "var(--ci-glass-text-shadow)" : "none";
   const strongTextShadow = isGlass ? "var(--ci-glass-text-shadow-strong)" : "none";

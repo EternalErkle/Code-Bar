@@ -27,6 +27,9 @@ interface Props {
   enableWindowsCtrlCv?: boolean;
 }
 
+// 每个终端保留的回滚行数。隐藏的会话面板不会卸载，缓冲区会一直占着内存。
+const TERMINAL_SCROLLBACK = 1500;
+
 // ── xterm 主题定义 ─────────────────────────────────────────────
 const TERM_THEME_DARK = {
   background:           "#0a0a0c",
@@ -204,7 +207,9 @@ export function PtyTerminal({
       lineHeight,
       cursorBlink: true,
       cursorStyle: "bar",
-      scrollback: 5000,
+      // 会话面板从不卸载，所以每个隐藏终端的回滚缓冲区会一直驻留。
+      // 5000 行在终端满载时约 7MB/个，十个终端就是几十 MB。
+      scrollback: TERMINAL_SCROLLBACK,
       allowTransparency: false,
       convertEol: true,
     });

@@ -1,6 +1,24 @@
+use std::sync::OnceLock;
+
 use serde::Serialize;
 
 use crate::util::background_command;
+
+/// 进程级共享的 blocking HTTP 客户端。
+/// 每次调用都 build 一个 client 会启动一条新的运行时线程，这里只构建一次。
+static HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+
+fn http_client() -> Result<&'static reqwest::blocking::Client, &'static str> {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(20))
+                .build()
+                .map_err(|err| err.to_string())
+        })
+        .as_ref()
+        .map_err(|err| err.as_str())
+}
 
 #[derive(Debug, serde::Serialize)]
 struct ClaudeMessageRequest<'a> {
@@ -113,7 +131,7 @@ fn fetch_codex_usage_via_http() -> RunnerUsageSnapshot {
         };
     }
 
-    let client = match reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+    let client = match http_client() {
         Ok(client) => client,
         Err(err) => {
             return RunnerUsageSnapshot {
@@ -233,7 +251,7 @@ fn fetch_claude_usage_via_headers() -> RunnerUsageSnapshot {
         messages: [ClaudeMessage { role: "user", content: "hi" }],
     };
 
-    let client = match reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+    let client = match http_client() {
         Ok(client) => client,
         Err(err) => {
             return RunnerUsageSnapshot {

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppI18n } from "../i18n";
 import { useSessionStore } from "../store/sessionStore";
 import { useSettingsStore, type RunnerType } from "../store/settingsStore";
@@ -25,8 +25,8 @@ export function useSessionRunnerController({
   const isWindows = navigator.userAgent.toLowerCase().includes("windows");
   const session = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId));
   const worktreeReady = useSessionStore((s) => s.worktreeReadyIds.has(sessionId));
-  const { updateSession } = useSessionStore();
-  const { settings } = useSettingsStore();
+  const updateSession = useSessionStore((s) => s.updateSession);
+  const fallbackRunner = useSettingsStore((s) => s.settings.runner);
 
   const [pendingQuery, setPendingQuery] = useState("");
   const [querySent, setQuerySent] = useState(() => {
@@ -51,7 +51,7 @@ export function useSessionRunnerController({
   const pendingQueryRef = useRef<string | null>(null);
   const pendingQueryTimerRef = useRef<number | null>(null);
 
-  const runner = session ? session.runner : settings.runner;
+  const runner = session ? session.runner : fallbackRunner;
   const supportsPromptLaunch = runner.type === "claude-code" || runner.type === "codex";
   const boundResumeSessionId = supportsPromptLaunch ? (session?.providerSessionId?.trim() ?? "") : "";
   const resumeSessionId = supportsPromptLaunch
@@ -156,10 +156,11 @@ export function useSessionRunnerController({
       .catch(() => setCliAvailable(false));
   }, [cliCommand]);
 
-  const buildContextEnv = useCallback((): [string, string][] => {
-    if (!session) return [];
-    return buildRunnerContextEnv(session, runner);
-  }, [session, runner]);
+  // 每次渲染都重建会读三个 store，而这个值只在 PTY 启动时被读取一次。
+  const contextEnv = useMemo<[string, string][]>(
+    () => (session ? buildRunnerContextEnv(session, runner) : []),
+    [session, runner],
+  );
 
   const handleSubmitQuery = useCallback((q: string) => {
     const trimmed = q.trim();
@@ -325,6 +326,6 @@ export function useSessionRunnerController({
     isResumeLaunch,
     cliCommand,
     installCmd,
-    contextEnv: buildContextEnv(),
+    contextEnv,
   };
 }

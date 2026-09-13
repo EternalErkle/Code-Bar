@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -12,10 +13,19 @@ use std::{
 use crate::util::{background_command, resolve_provider_dir, resolve_provider_file_path};
 
 // ── 路径解析缓存 ──────────────────────────────────────────────────
-/// 进程级缓存：命令名 → 完整路径（None 表示找不到，避免重复触发耗时 shell_which）
-static CMD_PATH_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+/// 未命中结果的缓存时长。命中的路径永久缓存；未命中只短暂缓存，
+/// 这样用户在应用内安装完 CLI 后 check_cli 不必重启进程就能转为可用。
+const MISS_TTL: Duration = Duration::from_secs(10);
 
-fn cmd_path_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+struct CachedCommandPath {
+    path: Option<String>,
+    resolved_at: Instant,
+}
+
+/// 进程级缓存：命令名 → 完整路径（None 表示找不到，避免重复触发耗时 shell_which）
+static CMD_PATH_CACHE: OnceLock<Mutex<HashMap<String, CachedCommandPath>>> = OnceLock::new();
+
+fn cmd_path_cache() -> &'static Mutex<HashMap<String, CachedCommandPath>> {
     CMD_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -33,11 +43,15 @@ pub fn resolve_command_path(command: &str) -> String {
         return command.to_string();
     }
 
-    // 命中缓存
+    // 命中缓存（未命中结果只在 MISS_TTL 内复用）
     {
         let cache = cmd_path_cache().lock().unwrap();
         if let Some(cached) = cache.get(command) {
-            return cached.clone().unwrap_or_else(|| command.to_string());
+            match &cached.path {
+                Some(path) => return path.clone(),
+                None if cached.resolved_at.elapsed() < MISS_TTL => return command.to_string(),
+                None => {}
+            }
         }
     }
 
@@ -53,10 +67,16 @@ pub fn resolve_command_path(command: &str) -> String {
             Some(p)
         });
 
-    // 写入缓存（包括 None，避免下次再走慢路径）
+    // 写入缓存（None 也写入，但带 MISS_TTL 过期，避免永久把已安装的 CLI 判成缺失）
     {
         let mut cache = cmd_path_cache().lock().unwrap();
-        cache.insert(command.to_string(), result.clone());
+        cache.insert(
+            command.to_string(),
+            CachedCommandPath {
+                path: result.clone(),
+                resolved_at: Instant::now(),
+            },
+        );
     }
 
     normalize_windows_command_path(result.unwrap_or_else(|| command.to_string()))

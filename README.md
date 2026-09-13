@@ -21,14 +21,14 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/EternalErkle/Code-Bar?style=flat-square" alt="License"></a>
 </p>
 
-<p align="center">
+<!-- <p align="center">
   <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-windows-x64.msi">Windows</a> ·
   <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg">macOS Apple Silicon</a> ·
   <a href="https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg">macOS Intel</a>
-</p>
+</p> -->
 
 <p align="center">
-  <a href="https://github.com/EternalErkle/Code-Bar/releases/latest">Download</a> ·
+  <!-- <a href="https://github.com/EternalErkle/Code-Bar/releases/latest">Download</a> · -->
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
   <a href="#build-from-source">Build from Source</a> ·
@@ -73,9 +73,7 @@ Code Bar gives each task its own session and git worktree so you can run paralle
 
 ### Step 1: Download the app
 
-- [Windows x64 MSI](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-windows-x64.msi)
-- [macOS Apple Silicon DMG](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-apple-silicon.dmg)
-- [macOS Intel DMG](https://github.com/EternalErkle/Code-Bar/releases/latest/download/code-bar-macos-intel.dmg)
+- [Windows x64 MSI]()
 
 ### Step 2: Install Claude Code or Codex
 

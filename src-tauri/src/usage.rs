@@ -309,11 +309,12 @@ fn read_claude_oauth_token() -> Option<String> {
 /// Unlike the old `POST /v1/messages` probe this costs no tokens and works for
 /// subscription users, who never have `ANTHROPIC_API_KEY` set.
 fn fetch_claude_usage_via_oauth(token: &str) -> RunnerUsageSnapshot {
-    let base_url = std::env::var("ANTHROPIC_BASE_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "https://api.anthropic.com".to_string());
-    let endpoint = format!("{}/api/oauth/usage", base_url.trim_end_matches('/'));
+    // Deliberately NOT honouring ANTHROPIC_BASE_URL here. That variable redirects
+    // model inference at an OpenAI-compatible proxy (e.g. a local relay on
+    // 127.0.0.1). This endpoint is an Anthropic *account* API tied to the user's
+    // OAuth session, which such proxies do not implement — pointing at one just
+    // yields 404. The API-key path below still honours the override.
+    let endpoint = "https://api.anthropic.com/api/oauth/usage".to_string();
 
     let client = match http_client() {
         Ok(client) => client,

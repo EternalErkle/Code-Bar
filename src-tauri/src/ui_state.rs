@@ -455,10 +455,14 @@ fn current_branch(path: &Path) -> Option<String> {
     }
 }
 
-fn normalize_task_title(task: &str, session_id: &str) -> String {
+fn normalize_task_title(
+    locale: crate::i18n::AppLocale,
+    task: &str,
+    session_id: &str,
+) -> String {
     let trimmed = task.trim();
     if trimmed.is_empty() {
-        return format!("会话 {session_id}");
+        return crate::i18n::translate(locale, "session.default_name", &[("id", session_id)]);
     }
 
     let chars = trimmed.chars().collect::<Vec<_>>();
@@ -531,7 +535,11 @@ impl ClaudeHistoryIndex {
         Self { project_dirs }
     }
 
-    fn latest_hint(&self, session_id: &str) -> Option<RecoveryHint> {
+    fn latest_hint(
+        &self,
+        locale: crate::i18n::AppLocale,
+        session_id: &str,
+    ) -> Option<RecoveryHint> {
         let suffix = format!("session-{session_id}");
         let mut best: Option<RecoveryHint> = None;
 
@@ -578,7 +586,7 @@ impl ClaudeHistoryIndex {
                 // 有些 Claude 会话在未成功发起首条 query 前也会落盘 session 文件。
                 // 这种场景下仍然应该可恢复，任务标题退化为通用文案。
                 if first_task.is_empty() {
-                    first_task = "继续会话".to_string();
+                    first_task = crate::i18n::translate(locale, "session.continue_session", &[]);
                 }
 
                 select_newer_hint(
@@ -752,6 +760,7 @@ fn load_codex_history_index() -> HashMap<String, RecoveryHint> {
 }
 
 fn resolve_recovery_hint(
+    locale: crate::i18n::AppLocale,
     session_id: &str,
     worktree_path: &Path,
     recovery_bindings: &HashMap<String, RecoveryBinding>,
@@ -761,7 +770,7 @@ fn resolve_recovery_hint(
     let worktree_key = normalize_expanded_path(&worktree_path.to_string_lossy());
     if let Some(binding) = recovery_bindings.get(session_id) {
         if binding.runner_type == "claude-code" {
-            let mut hint = claude_index.latest_hint(session_id)?;
+            let mut hint = claude_index.latest_hint(locale, session_id)?;
             hint.provider_session_id = binding.provider_session_id.clone();
             hint.modified_at_ms = hint.modified_at_ms.max(binding.updated_at_ms);
             return Some(hint);
@@ -777,10 +786,11 @@ fn resolve_recovery_hint(
         }
     }
 
-    claude_index.latest_hint(session_id)
+    claude_index.latest_hint(locale, session_id)
 }
 
 fn resolve_existing_session_binding(
+    locale: crate::i18n::AppLocale,
     session: &BackfillSessionBindingInput,
     codex_history: &HashMap<String, RecoveryHint>,
     claude_index: &ClaudeHistoryIndex,
@@ -796,7 +806,7 @@ fn resolve_existing_session_binding(
     }
 
     let hint = match session.runner_type.trim() {
-        "claude-code" => claude_index.latest_hint(&session.session_id)?,
+        "claude-code" => claude_index.latest_hint(locale, &session.session_id)?,
         "codex" => {
             let worktree_path = normalize_path(session.worktree_path.clone())?;
             codex_history.get(&worktree_path).cloned()?
@@ -1041,10 +1051,13 @@ fn backfill_session_bindings_with(
     codex_history: &HashMap<String, RecoveryHint>,
     claude_index: &ClaudeHistoryIndex,
 ) -> Result<Vec<BackfilledSessionBinding>, String> {
+    use tauri::Manager;
+    let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     let mut backfilled = Vec::new();
 
     for session in sessions {
-        let Some(binding) = resolve_existing_session_binding(&session, codex_history, claude_index)
+        let Some(binding) =
+            resolve_existing_session_binding(locale, &session, codex_history, claude_index)
         else {
             continue;
         };
@@ -1273,6 +1286,10 @@ fn recover_sessions_with(
         .collect::<HashMap<_, _>>();
     let existing = existing_session_ids.into_iter().collect::<HashSet<_>>();
     let worktree_owner = worktree_owner_index(&recovery_bindings);
+    let locale = {
+        use tauri::Manager;
+        crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>())
+    };
     let mut recovered = Vec::new();
 
     for workspace in workspaces {
@@ -1327,6 +1344,7 @@ fn recover_sessions_with(
             }
 
             let Some(hint) = resolve_recovery_hint(
+                locale,
                 &session_id,
                 &worktree_path,
                 &recovery_bindings,
@@ -1346,7 +1364,7 @@ fn recover_sessions_with(
                 name: if name_is_custom {
                     dir_name.to_string()
                 } else {
-                    normalize_task_title(&current_task, &session_id)
+                    normalize_task_title(locale, &current_task, &session_id)
                 },
                 name_is_custom,
                 workspace_id: workspace.workspace_id.clone(),

@@ -142,7 +142,17 @@ pub fn run() {
             }
 
             // 系统托盘
-            let quit_item = MenuItem::with_id(app, "quit", "退出 Code Bar", true, None::<&str>)?;
+            // 此时前端尚未调用 set_app_locale，先用默认语言，稍后由 set_app_locale 改写。
+            let quit_item = MenuItem::with_id(
+                app,
+                "quit",
+                i18n::translate(i18n::AppLocale::default(), "tray.quit", &[]),
+                true,
+                None::<&str>,
+            )?;
+            app.manage(i18n::TrayQuitItem(std::sync::Mutex::new(Some(
+                quit_item.clone(),
+            ))));
             let tray_menu = Menu::with_items(app, &[&quit_item])?;
             let tray_icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
 
@@ -244,6 +254,7 @@ pub fn run() {
             git::worktree::prune_orphan_worktrees,
             // PTY 终端
             pty::start_pty_session,
+            pty::resolve_user_shell,
             pty::write_pty,
             pty::resize_pty,
             pty::stop_pty_session,

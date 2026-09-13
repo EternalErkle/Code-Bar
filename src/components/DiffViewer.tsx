@@ -156,6 +156,8 @@ function DiffFileRow({
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [fetchedHunks, setFetchedHunks] = useState<DiffHunk[] | null>(null);
   const [fetchedNote, setFetchedNote] = useState<string | null>(null);
+  // Discarding a hunk permanently drops those edits, so require a second click.
+  const [pendingDiscardHunk, setPendingDiscardHunk] = useState<number | null>(null);
   const isBinary = !!file.binary;
   const useInnerScroll = contentMaxHeight !== "none";
 
@@ -257,7 +259,46 @@ function DiffFileRow({
                   <span>{hunk.header}</span>
                   <div style={{ marginInlineStart: "auto", display: "flex", gap: 2 }}>
                     {fileMode === "unstaged" && onStageHunk && <HunkActionButton label={t("scm.stageHunk")} icon={<Plus size={12} strokeWidth={1.8} />} onClick={() => onStageHunk(file.path, hi)} disabled={busy} />}
-                    {fileMode === "unstaged" && onDiscardHunk && <HunkActionButton label={t("scm.discardHunk")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => onDiscardHunk(file.path, hi)} disabled={busy} />}
+                    {fileMode === "unstaged" && onDiscardHunk && (
+                      pendingDiscardHunk === hi ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              setPendingDiscardHunk(null);
+                              onDiscardHunk(file.path, hi);
+                            }}
+                            disabled={busy}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: "0 4px",
+                              color: "var(--ci-red)",
+                              fontSize: 10,
+                              fontWeight: 600,
+                              cursor: busy ? "default" : "pointer",
+                            }}
+                          >
+                            {t("scm.confirmDiscardHunk")}
+                          </button>
+                          <button
+                            onClick={() => setPendingDiscardHunk(null)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: "0 4px",
+                              color: "var(--ci-text-muted)",
+                              fontSize: 10,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {t("common.cancel")}
+                          </button>
+                        </>
+                      ) : (
+                        <HunkActionButton label={t("scm.discardHunk")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => setPendingDiscardHunk(hi)} disabled={busy} />
+                      )
+                    )}
                     {fileMode === "staged" && onUnstageHunk && <HunkActionButton label={t("scm.unstageHunk")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => onUnstageHunk(file.path, hi)} disabled={busy} />}
                   </div>
                 </div>

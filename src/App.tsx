@@ -396,6 +396,16 @@ export default function App() {
   }, []);
 
   // ── Esc 关闭 ──────────────────────────────────────────────
+  // Esc 在输入框 / 编辑器 / 终端内属于“取消当前操作”，不应顺带隐藏整个窗口。
+  const escapeShouldStayInPlace = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        "input, textarea, select, [contenteditable='true'], .ci-pty-terminal, .xterm, .monaco-editor, [data-esc-local='true']"
+      )
+    );
+  };
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -407,6 +417,7 @@ export default function App() {
         useWorkbenchStore.getState().resetWorkbenchMode();
         return;
       }
+      if (escapeShouldStayInPlace(e.target)) return;
       invoke("close_popup").catch(() => {});
     };
     window.addEventListener("keydown", handler);

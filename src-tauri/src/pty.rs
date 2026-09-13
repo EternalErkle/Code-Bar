@@ -207,6 +207,13 @@ pub async fn start_pty_session(
         }
     }
 
+    // hook 鉴权令牌。必须排在调用方环境变量之后注入，这样前端即使传入同名变量
+    // 也无法覆盖真实令牌；前端自始至终不接触该值，避免 webview 被注入后泄露。
+    // 生成失败时不注入：监听端会因此拒绝全部请求（fail closed）。
+    if let Some(token) = crate::hook_auth::run_token() {
+        cmd.env(crate::hook_auth::HOOK_TOKEN_ENV, token);
+    }
+
     let child = pair
         .slave
         .spawn_command(cmd)

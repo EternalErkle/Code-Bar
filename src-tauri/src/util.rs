@@ -60,6 +60,21 @@ pub fn home_dir() -> Option<PathBuf> {
     None
 }
 
+/// 将任意字符串转换为安全的文件名片段：仅保留 [A-Za-z0-9-_]，其余替换为 '_'。
+/// session id / ui-state key 等被拼进文件名的值都必须先经过这里，避免路径穿越。
+pub fn sanitize_fs_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 pub fn codebar_runtime_dir() -> PathBuf {
     let base = home_dir().unwrap_or_else(std::env::temp_dir);
     let dir = base.join(".codebar").join("run");

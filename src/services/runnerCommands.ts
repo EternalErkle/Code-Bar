@@ -55,7 +55,6 @@ export function buildRunnerContextEnv(session: ClaudeSession, runner: RunnerConf
   const workspaces = useWorkspaceStore.getState().workspaces;
   const workspace = workspaces.find((w) => w.id === session.workspaceId);
   const allSessions = useSessionStore.getState().sessions;
-  const settings = useSettingsStore.getState().settings;
   const siblingSessions = allSessions.filter(
     (s) => s.workspaceId === session.workspaceId && s.id !== session.id && s.status === "running"
   );
@@ -76,9 +75,7 @@ export function buildRunnerContextEnv(session: ClaudeSession, runner: RunnerConf
     ] : []),
   ];
 
-  const apiKey = runner.apiKeyOverride?.trim()
-    || settings.apiKeys?.[runner.type === "claude-code" ? "anthropic" : "openai"]
-    || "";
+  const apiKey = runner.apiKeyOverride?.trim() || "";
   const apiBaseUrl = runner.apiBaseUrl?.trim() ?? "";
 
   if (runner.type === "claude-code") {

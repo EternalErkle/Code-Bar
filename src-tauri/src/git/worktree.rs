@@ -253,7 +253,7 @@ pub async fn setup_session_worktree(
             .output();
         let _ = background_command("git")
             .current_dir(&expanded_workdir)
-            .args(["branch", "-D", &branch])
+            .args(["branch", "-D", "--", &branch])
             .output();
 
         // 创建 worktree

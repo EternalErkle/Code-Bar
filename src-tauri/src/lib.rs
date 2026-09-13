@@ -1,10 +1,10 @@
 // ── 模块声明 ──────────────────────────────────────────────────────
 mod cli_detect;
 mod git;
+mod hook_auth;
 mod hooks;
 mod i18n;
 mod integration_control;
-mod keystore;
 mod notification;
 mod provider_sessions;
 mod pty;
@@ -176,8 +176,6 @@ pub fn run() {
             window::load_popup_bounds,
             window::restore_popup_bounds,
             // API Key 安全存储
-            keystore::save_api_key,
-            keystore::load_api_key,
             // Runner（子进程模式）
             runner::start_runner,
             runner::stop_runner,
@@ -185,8 +183,6 @@ pub fn run() {
             runner::stop_claude_session,
             // CLI 检测
             cli_detect::check_cli,
-            cli_detect::debug_env,
-            cli_detect::detect_cli_config,
             // Git diff
             git::diff::get_git_diff,
             git::diff::get_git_diff_branch,

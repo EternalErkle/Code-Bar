@@ -78,21 +78,23 @@ pub fn load_popup_bounds(app: tauri::AppHandle) -> Option<PopupBounds> {
 
 // ── 内部辅助：定位弹窗（优先使用记忆的位置，否则默认居中）─────
 
-pub fn position_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
-    if let Some(bounds) = load_bounds(app) {
-        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-            x: bounds.x,
-            y: bounds.y,
-        }));
-        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: bounds.width,
-            height: bounds.height,
-        }));
-        popup_log!("[popup] restored bounds => {:?}", bounds);
-        return;
-    }
+/// 判断给定矩形（逻辑像素）是否与当前任一显示器有实质性重叠。
+/// 用于校验记忆坐标在显示器配置变化后（外接显示器拔掉、分辨率变化等）是否仍然有效。
+fn is_rect_on_screen(win: &tauri::WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> bool {
+    let monitors = win.available_monitors().unwrap_or_default();
+    monitors.iter().any(|m| {
+        let ms = m.scale_factor();
+        let mx = m.position().x as f64 / ms;
+        let my = m.position().y as f64 / ms;
+        let mw = m.size().width as f64 / ms;
+        let mh = m.size().height as f64 / ms;
+        // 至少 40 逻辑像素落在显示器可见区域内，才算"在屏幕上"
+        x + w > mx + 40.0 && x < mx + mw - 40.0 && y + h > my + 40.0 && y < my + mh - 40.0
+    })
+}
 
-    // 没有记忆：默认居中
+/// 将窗口置于主显示器居中位置（不依赖磁盘记忆）。
+fn center_popup(win: &tauri::WebviewWindow) {
     let monitor_opt = win
         .primary_monitor()
         .ok()
@@ -124,6 +126,73 @@ pub fn position_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
             x: 200.0,
             y: 120.0,
         }));
+    }
+}
+
+pub fn position_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    if let Some(bounds) = load_bounds(app) {
+        if is_rect_on_screen(win, bounds.x, bounds.y, bounds.width, bounds.height) {
+            let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x: bounds.x,
+                y: bounds.y,
+            }));
+            let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: bounds.width,
+                height: bounds.height,
+            }));
+            popup_log!("[popup] restored bounds => {:?}", bounds);
+            return;
+        }
+        popup_log!("[popup] saved bounds off current screens, discarding => {:?}", bounds);
+    }
+
+    // 没有记忆，或记忆坐标已不在任何显示器范围内：默认居中
+    center_popup(win);
+}
+
+/// 显示前校验窗口是否仍在可见显示器范围内。
+///
+/// show_popup 平时不会重新定位（隐藏期间位置不变，直接原地显示即可），
+/// 但如果应用在窗口隐藏期间显示器配置发生变化（外接显示器拔掉、分辨率
+/// 变化等），记忆坐标就会指向一块已经不存在的屏幕区域：窗口状态变为
+/// visible，用户却在任何显示器上都看不到它，表现为"点击托盘图标没反应"。
+fn ensure_on_screen(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let pos = match win.outer_position() {
+        Ok(p) => p.to_logical::<f64>(scale),
+        Err(_) => return,
+    };
+    let size = win
+        .outer_size()
+        .map(|s| s.to_logical::<f64>(scale))
+        .unwrap_or(tauri::LogicalSize {
+            width: 700.0,
+            height: 600.0,
+        });
+
+    if is_rect_on_screen(win, pos.x, pos.y, size.width, size.height) {
+        return;
+    }
+
+    popup_log!(
+        "[popup] window off-screen at ({},{}) size {}x{}, recentring",
+        pos.x,
+        pos.y,
+        size.width,
+        size.height
+    );
+    center_popup(win);
+    if let Ok(new_pos) = win.outer_position() {
+        let logical = new_pos.to_logical::<f64>(scale);
+        save_bounds_to_file(
+            app,
+            &PopupBounds {
+                x: logical.x,
+                y: logical.y,
+                width: size.width,
+                height: size.height,
+            },
+        );
     }
 }
 
@@ -258,9 +327,10 @@ unsafe fn do_animated_set_frame(
 // ── 显示 / 隐藏 / 切换弹窗 ────────────────────────────────────────
 
 pub fn show_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
-    // 注意：不在这里调用 position_popup。
-    // 窗口隐藏时位置不会改变，下次 show 时原地显示即可，无需重新定位。
-    // position_popup 只在 create_popup（首次创建）时调用一次。
+    // 注意：这里不调用完整的 position_popup（不强制改变位置）。
+    // 窗口隐藏时位置通常不会改变，下次 show 时原地显示即可。
+    // 但仍需校验记忆坐标在隐藏期间是否因显示器配置变化而失效。
+    ensure_on_screen(app, win);
     let _ = win.show();
 
     #[cfg(target_os = "macos")]
@@ -387,6 +457,7 @@ pub fn focus_popup(app: tauri::AppHandle, session_id: Option<String>) {
     app.state::<crate::state::PreExpandPos>().clear();
 
     if let Some(win) = app.get_webview_window("popup") {
+        ensure_on_screen(&app, &win);
         let _ = win.show();
 
         #[cfg(target_os = "macos")]

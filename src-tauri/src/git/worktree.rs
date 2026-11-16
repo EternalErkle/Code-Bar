@@ -1,7 +1,12 @@
 use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
-use crate::runtime_scope::session_worktree_root_dir;
+use crate::runtime_scope::session_worktree_base;
 use crate::util::{background_command, expand_path, normalize_expanded_path};
+
+/// git and the frontend both accept forward slashes; keep one separator style in stored paths.
+fn normalize_slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
 
 // ── 辅助函数 ──────────────────────────────────────────────────────
 pub fn session_branch_prefix() -> String {
@@ -282,15 +287,10 @@ pub async fn setup_session_worktree(
             return Ok(None); // detached HEAD，跳过
         }
 
-        // 计算 worktree 路径（放在 repo 同级的 session worktree 根目录）
-        let repo_parent = Path::new(&expanded_workdir)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| expanded_workdir.clone());
         // 目录名来自用户输入的名称；为空或全是非法字符时回落到 session-{id}
         let slug = worktree_slug(&requested_name)
             .unwrap_or_else(|| format!("session-{session_id_clone}"));
-        let wt_base = format!("{}/{}", repo_parent, session_worktree_root_dir());
+        let wt_base = normalize_slashes(&session_worktree_base(Path::new(&expanded_workdir)));
         // 重名时追加序号，而不是强删已存在的目录——它可能属于别的 session
         let worktree_path = unique_worktree_path(&wt_base, &slug);
         let dir_name = Path::new(&worktree_path)
@@ -375,12 +375,8 @@ pub async fn prune_orphan_worktrees(
     let expanded_workdir = expand_path(&workdir);
 
     tokio::task::spawn_blocking(move || {
-        let repo_parent = Path::new(&expanded_workdir)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| expanded_workdir.clone());
-        let wt_base = format!("{}/{}", repo_parent, session_worktree_root_dir());
-        let wt_base_path = Path::new(&wt_base);
+        let wt_base = session_worktree_base(Path::new(&expanded_workdir));
+        let wt_base_path = wt_base.as_path();
 
         if !wt_base_path.exists() {
             return Ok(vec![]);

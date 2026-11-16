@@ -36,6 +36,19 @@ interface PersistedSessionLike {
   id: string;
   workspaceId: string;
   createdAt?: number;
+  workdir?: string;
+  worktreePath?: string;
+}
+
+/// 旧 worktree 路径 → 新路径（worktree 迁移到其它磁盘后由迁移脚本写入）。
+/// 键为小写、正斜杠、无尾斜杠的规范形式。localStorage 里的旧路径无法在应用外改写，
+/// 所以每次启动都在合并前重映射一次；已迁移的值不再命中，重复执行无副作用。
+const WORKTREE_MOVES_KEY = "code-bar-worktree-moves";
+type WorktreeMoves = Record<string, string>;
+
+function movedPath(path: string | undefined, moves: WorktreeMoves): string | undefined {
+  if (!path) return path;
+  return moves[path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()] ?? path;
 }
 
 interface PersistedSessionsState {
@@ -209,9 +222,11 @@ function matchesDeletedWorkspace(
 /// 里仍然存着，合并时若原样搬运就会把它们重新注入 localStorage。
 /// 这里按 partialize 的形状归一化（保留空数组而不是删除键），
 /// 避免消费方遇到 undefined。
-function sanitizePersistedSession<T extends PersistedSessionLike>(session: T): T {
+function sanitizePersistedSession<T extends PersistedSessionLike>(session: T, moves: WorktreeMoves): T {
   return {
     ...session,
+    workdir: movedPath(session.workdir, moves),
+    worktreePath: movedPath(session.worktreePath, moves),
     diffFiles: [],
     output: [],
     pid: undefined,
@@ -221,7 +236,8 @@ function sanitizePersistedSession<T extends PersistedSessionLike>(session: T): T
 function mergeSessionValue(
   fileValue: string | null,
   localValue: string | null,
-  deletedState: DeletedUiState
+  deletedState: DeletedUiState,
+  moves: WorktreeMoves
 ): string | null {
   const fileState = parseJson<PersistedSessionsState>(fileValue);
   const localState = parseJson<PersistedSessionsState>(localValue);
@@ -235,10 +251,10 @@ function mergeSessionValue(
 
   const localSessions = (localState?.state?.sessions ?? [])
     .filter(shouldKeepSession)
-    .map(sanitizePersistedSession);
+    .map((session) => sanitizePersistedSession(session, moves));
   const fileSessions = (fileState?.state?.sessions ?? [])
     .filter(shouldKeepSession)
-    .map(sanitizePersistedSession);
+    .map((session) => sanitizePersistedSession(session, moves));
   const mergedSessions = [...localSessions];
   const existingIds = new Set(localSessions.map((session) => session.id));
 
@@ -339,11 +355,12 @@ function mergePersistedValue(
   key: PersistKey,
   fileValue: string | null,
   localValue: string | null,
-  deletedState: DeletedUiState
+  deletedState: DeletedUiState,
+  moves: WorktreeMoves
 ): string | null {
   switch (key) {
     case "code-bar-sessions":
-      return mergeSessionValue(fileValue, localValue, deletedState);
+      return mergeSessionValue(fileValue, localValue, deletedState, moves);
     case "code-bar-workspaces":
       return mergeWorkspaceValue(fileValue, localValue, deletedState);
     case "code-bar-settings":
@@ -370,17 +387,18 @@ export async function bootstrapPersistState(): Promise<void> {
 
   const [fromFile, loadedDeletedState] = await Promise.all([
     invokeSafe<Record<string, string | null>>("load_ui_states", {
-      keys: [...PERSIST_KEYS],
+      keys: [...PERSIST_KEYS, WORKTREE_MOVES_KEY],
     }),
     invokeSafe<DeletedUiState>("load_deleted_ui_state", {}),
     homeDirTask,
   ]);
   const deletedState = loadedDeletedState ?? {};
+  const moves = parseJson<WorktreeMoves>(fromFile?.[WORKTREE_MOVES_KEY] ?? null) ?? {};
 
   for (const key of PERSIST_KEYS) {
     const fileValue = fromFile?.[key] ?? null;
     const localValue = window.localStorage.getItem(key);
-    const mergedValue = mergePersistedValue(key, fileValue, localValue, deletedState);
+    const mergedValue = mergePersistedValue(key, fileValue, localValue, deletedState, moves);
 
     if (mergedValue !== null) {
       if (window.localStorage.getItem(key) !== mergedValue) {

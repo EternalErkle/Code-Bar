@@ -9,7 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::runtime_scope::{session_worktree_root_dir, ui_state_namespace_dir};
+use crate::runtime_scope::{session_worktree_base, ui_state_namespace_dir};
 use crate::util::{background_command, home_dir, normalize_expanded_path};
 
 const UI_STATE_DIR: &str = "ui-state";
@@ -1028,11 +1028,7 @@ fn collect_known_session_id_floor(
         }
 
         let repo_root = PathBuf::from(&normalized_workspace_path);
-        let Some(parent) = repo_root.parent() else {
-            continue;
-        };
-
-        let worktree_root = parent.join(session_worktree_root_dir());
+        let worktree_root = session_worktree_base(&repo_root);
         let Ok(entries) = fs::read_dir(&worktree_root) else {
             continue;
         };
@@ -1420,12 +1416,11 @@ fn recover_sessions_with(
 
     for workspace in workspaces {
         let normalized_workspace_path = normalize_path(Some(workspace.workspace_path)).unwrap_or_default();
-        let repo_root = PathBuf::from(&normalized_workspace_path);
-        let Some(parent) = repo_root.parent() else {
+        if normalized_workspace_path.is_empty() {
             continue;
-        };
-
-        let worktree_root = parent.join(session_worktree_root_dir());
+        }
+        let repo_root = PathBuf::from(&normalized_workspace_path);
+        let worktree_root = session_worktree_base(&repo_root);
         if !worktree_root.exists() {
             continue;
         }

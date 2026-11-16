@@ -1528,7 +1528,8 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
                 }
             };
 
-            let mut reader = std::io::BufReader::new(stream);
+            let _ = stream.set_read_timeout(Some(HOOK_READ_TIMEOUT));
+            let mut reader = std::io::BufReader::new(stream).take(HOOK_MAX_PAYLOAD);
             let mut payload = String::new();
             if let Err(e) = reader.read_to_string(&mut payload) {
                 eprintln!("[hooks:{}] read 失败: {e}", source.label());
@@ -1573,7 +1574,8 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
                 }
             };
 
-            let mut reader = std::io::BufReader::new(stream);
+            let _ = stream.set_read_timeout(Some(HOOK_READ_TIMEOUT));
+            let mut reader = std::io::BufReader::new(stream).take(HOOK_MAX_PAYLOAD);
             let mut payload = String::new();
             if let Err(e) = reader.read_to_string(&mut payload) {
                 eprintln!("[hooks:{}] read 失败: {e}", source.label());
@@ -1597,6 +1599,11 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
         }
     });
 }
+
+// 监听线程逐个串行处理连接：一个不关闭写端的客户端会让 read_to_string 永久阻塞，
+// 之后所有 hook 事件都收不到。超时 + 上限保证单个连接既卡不住线程也撑不爆内存。
+const HOOK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const HOOK_MAX_PAYLOAD: u64 = 4 * 1024 * 1024;
 
 pub fn start_hook_socket_servers(app: tauri::AppHandle) {
     start_hook_socket_server(app.clone(), HookSource::ClaudeCode);

@@ -4,6 +4,8 @@ mod git;
 mod hook_auth;
 mod hooks;
 mod i18n;
+#[cfg(windows)]
+mod job_object;
 mod integration_control;
 mod notification;
 mod provider_sessions;
@@ -73,7 +75,12 @@ pub fn run() {
         .manage(GitWatcherMap::default())
         .manage(PopupVisible::new(false))
         .manage(PreExpandPos::new())
-        .manage(RestoringLock::new())
+        .manage(RestoringLock::new());
+
+    #[cfg(windows)]
+    let builder = builder.manage(job_object::new_map());
+
+    let builder = builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -179,6 +186,14 @@ pub fn run() {
             let app_handle2 = app.handle().clone();
             app.on_menu_event(move |_app, event| {
                 if event.id().as_ref() == "quit" {
+                    // Windows：退出前把所有仍存活的 PTY 会话对应的进程树杀干净，
+                    // 否则 shell 派生出的子进程（比如正在跑的 python 脚本）会变成孤儿，
+                    // 只能在任务管理器里手动结束。
+                    #[cfg(windows)]
+                    {
+                        let job_map = app_handle2.state::<crate::state::JobObjectMap>().inner().clone();
+                        crate::job_object::terminate_all(&job_map);
+                    }
                     app_handle2.exit(0);
                 }
             });
@@ -300,6 +315,15 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { api, code, .. } => {
                 if code.is_none() {
                     api.prevent_exit();
+                } else {
+                    // 真正要退出了（code 为 Some）：兜底再清一次 Job Object，
+                    // 覆盖托盘菜单以外的退出路径（例如系统关机、未来新增的退出入口）。
+                    // terminate_all 会清空表，重复调用是无害的空操作。
+                    #[cfg(windows)]
+                    {
+                        let job_map = app.state::<crate::state::JobObjectMap>().inner().clone();
+                        crate::job_object::terminate_all(&job_map);
+                    }
                 }
             }
             _ => {}

@@ -39,6 +39,13 @@ objc = "0.2"
 cocoa = "0.26"
 mac-notification-sys = "0.6"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 # 发布构建优化：LTO + 单 codegen unit 让编译器做跨 crate 内联，strip 去掉符号表。
 # 代价是编译变慢，换取更小的二进制和更快的运行时。
 #

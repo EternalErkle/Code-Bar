@@ -262,6 +262,9 @@ pub async fn start_pty_session(
         .spawn_command(cmd)
         .map_err(|e| format!("spawn 失败: {e}"))?;
 
+    #[cfg(windows)]
+    let child_pid = child.process_id();
+
     let mut master_reader = pair
         .master
         .try_clone_reader()
@@ -293,6 +296,16 @@ pub async fn start_pty_session(
                 generation,
             },
         );
+
+        // Windows：把 shell 塞进专属 Job Object，这样它后续派生出的整棵子进程树
+        // （例如用户在终端里跑的 python 脚本）会在会话关闭 / 应用退出时被一并清理。
+        // 必须在 meta 锁内注册：旧代次的读取线程在同一把锁下判断「是否当前代次」
+        // 并终结 Job，锁外注册会让旧线程误杀新会话的 Job。失败时只记日志。
+        #[cfg(windows)]
+        if let Some(pid) = child_pid {
+            let job_map = app.state::<crate::state::JobObjectMap>().inner().clone();
+            crate::job_object::attach(&job_map, &session_id, pid);
+        }
 
         {
             let km = pty_killer_map(&app);
@@ -339,6 +352,8 @@ pub async fn start_pty_session(
     let master_map_r = pty_master_map(&app);
     let killer_map_r = pty_killer_map(&app);
     let session_meta_map_r = pty_session_meta_map(&app);
+    #[cfg(windows)]
+    let job_map_r = app.state::<crate::state::JobObjectMap>().inner().clone();
     std::thread::spawn(move || {
         const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
         const MAX_BATCH: usize = 512 * 1024;
@@ -425,6 +440,10 @@ pub async fn start_pty_session(
                 let mut mm = lock_or_recover(&master_map_r);
                 mm.remove(&sid_r);
             }
+            // shell 自然退出时 Job 句柄同样要释放，否则每个结束的会话都留下一个内核句柄，
+            // 连同 shell 遗留在后台的子进程一起常驻到应用退出。
+            #[cfg(windows)]
+            crate::job_object::terminate(&job_map_r, &sid_r);
             child
         };
 
@@ -593,6 +612,13 @@ pub fn stop_pty_session(app: tauri::AppHandle, session_id: String) -> Result<(),
             if mm.remove(&session_id).is_some() {
                 had_session = true;
             }
+        }
+        // Windows：杀掉整棵 Job 内进程树（shell 派生的子进程）。
+        // 与注册路径一样在 meta 锁内执行，避免与同 id 的新会话注册交错。
+        #[cfg(windows)]
+        {
+            let job_map = app.state::<crate::state::JobObjectMap>().inner().clone();
+            crate::job_object::terminate(&job_map, &session_id);
         }
         child
     };

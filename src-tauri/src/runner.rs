@@ -141,6 +141,7 @@ pub async fn start_runner(
 
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+    let child_pid = child.id();
 
     {
         let map = process_map(&app);
@@ -164,6 +165,19 @@ pub async fn start_runner(
                 "runner-output",
                 serde_json::json!({"session_id": sid_out, "line": display}),
             );
+        }
+        // 进程自然结束：从表中摘除并回收，否则 Child（及其句柄）会一直留在表里。
+        // 只摘除本次启动的进程：同 id 可能已被新一次 start_runner 替换。
+        let finished = {
+            let map = process_map(&app_out);
+            let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+            match map.get(&sid_out) {
+                Some(c) if c.id() == child_pid => map.remove(&sid_out),
+                _ => None,
+            }
+        };
+        if let Some(mut child) = finished {
+            let _ = child.wait();
         }
         let _ = app_out.emit("runner-done", serde_json::json!({"session_id": sid_out}));
     });
@@ -205,6 +219,10 @@ pub fn stop_runner(app: tauri::AppHandle, session_id: String) -> Result<(), Stri
     let mut map = map.lock().unwrap();
     if let Some(mut child) = map.remove(&session_id) {
         let _ = child.kill();
+        // wait 可能短暂阻塞，放到独立线程回收，避免持锁
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         let _ = app.emit("runner-done", serde_json::json!({"session_id": session_id}));
     }
     Ok(())

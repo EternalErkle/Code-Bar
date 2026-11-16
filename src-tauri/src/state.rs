@@ -29,6 +29,12 @@ pub struct PtySessionMeta {
 /// session_id → PTY 会话元信息（用于 hooks 事件精确路由）
 pub type PtySessionMetaMap = Arc<Mutex<HashMap<String, PtySessionMeta>>>;
 
+/// session_id → Windows Job Object 句柄（仅 Windows）。
+/// 用来在关闭 PTY 会话 / 退出应用时，把 shell 派生出的整棵子进程树
+/// （例如用户在终端里跑的 python 脚本）一并杀掉，而不只是杀顶层 shell。
+#[cfg(windows)]
+pub type JobObjectMap = crate::job_object::JobObjectMap;
+
 /// session_id → Git watcher（用于 SCM 自动刷新）
 pub type GitWatcherMap = Arc<Mutex<HashMap<String, RecommendedWatcher>>>;
 
